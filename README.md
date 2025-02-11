@@ -29,6 +29,13 @@ This is a React app that can be used to conduct Active Learning locally for imag
 11. Once the batch is complete, the script will automatically retrieve the progress of the current episode as well as the new batch to review.
 12. At the bottom of the left column will be checkpoint controls as well as import/export models. You can save checkpoints and/or export the model after each batch or before reviewing a batch.
 
+## Sampling Strategies
+
+- `least_confidence`: Selects samples where the model's highest predicted class probability is lowest, indicating uncertainty
+- `margin`: Picks samples with the smallest difference between the top two predicted class probabilities, suggesting confusion between classes
+- `entropy`: Chooses samples with highest entropy in their prediction probabilities, indicating maximum uncertainty across all classes
+- `diversity`: Selects samples that are most different from the currently labeled data in feature space, ensuring varied training examples
+
 ## Questions
 
 Contact Srikar on Slack
