@@ -12,7 +12,12 @@ import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { RadioGroup, RadioGroupItem } from "../components/ui/radio-group";
 import { AlertCircle, Upload, Download, Plus, Trash2 } from "lucide-react";
-import { Tabs, TabsContent } from "../components/ui/tabs";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "../components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -32,6 +37,8 @@ import {
   ActiveLearningStatus,
 } from "@/components/components";
 import CheckpointControls from "@/components/checkpointControls";
+import PretrainedModelImport from "@/components/pretrainedModel";
+import ModelAdaptationControls from "@/components/modelAdaptationControls";
 
 const ActiveLearningUI = () => {
   // Project Configuration State
@@ -238,31 +245,136 @@ const ActiveLearningUI = () => {
 
   const getNextBatch = async () => {
     try {
-      const batch = await activeLearnAPI.getBatch(samplingStrategy, batchSize);
+      console.log(
+        `Getting next batch with strategy: ${samplingStrategy}, size: ${batchSize}`
+      );
+
+      // Validate batch size to avoid None or invalid values
+      const validBatchSize = parseInt(batchSize) || 32;
+
+      const batch = await activeLearnAPI.getBatch(
+        samplingStrategy,
+        validBatchSize
+      );
+
+      console.log(`Received batch with ${batch.length} images`);
       setCurrentBatch(batch);
+
       if (batch.length > 0) {
         // Preload the first image to check for errors
         const img = new Image();
-        img.onerror = () => {
-          setImageLoadError("Failed to load image. Please try refreshing.");
+        const imageUrl = activeLearnAPI.getImageUrl(batch[0].image_id);
+        console.log(`Loading first image from URL: ${imageUrl}`);
+
+        img.onload = () => {
+          console.log("First image loaded successfully");
+          setCurrentImage(imageUrl);
+          setImageLoadError(null);
         };
-        img.src = activeLearnAPI.getImageUrl(batch[0].image_id);
-        setCurrentImage(img.src);
+
+        img.onerror = (e) => {
+          console.error("Image loading error:", e);
+          setImageLoadError(
+            `Failed to load image (ID: ${batch[0].image_id}). Please check image paths.`
+          );
+        };
+
+        img.src = imageUrl;
         setCurrentImageIndex(0);
+      } else {
+        setImageLoadError("Received empty batch. No images to display.");
       }
     } catch (error) {
+      console.error("getBatch error:", error);
       setImageLoadError("Failed to get next batch: " + error.message);
+
+      // Try fallback to random sampling
+      try {
+        console.log("Attempting fallback to random sampling");
+        const fallbackBatch = await activeLearnAPI.getBatch(
+          "random",
+          Math.min(parseInt(batchSize) || 32, status.unlabeled_count || 10)
+        );
+
+        console.log(
+          `Received fallback batch with ${fallbackBatch.length} images`
+        );
+        setCurrentBatch(fallbackBatch);
+
+        if (fallbackBatch.length > 0) {
+          const imageUrl = activeLearnAPI.getImageUrl(
+            fallbackBatch[0].image_id
+          );
+          setCurrentImage(imageUrl);
+          setCurrentImageIndex(0);
+          setImageLoadError("Using random sampling as fallback");
+        } else {
+          setImageLoadError(
+            "Failed to get any images. Try using a smaller batch size."
+          );
+        }
+      } catch (fallbackError) {
+        console.error("Fallback getBatch error:", fallbackError);
+        setImageLoadError(
+          "Failed to get batch even with fallback strategy. Try restarting the application."
+        );
+      }
     }
   };
 
-  const handleImagesLoaded = async (files) => {
+  const handleImagesLoaded = async (
+    files,
+    uploadType = false,
+    extraParam = ",",
+    detectedLabels = []
+  ) => {
     try {
-      const result = await activeLearnAPI.uploadData(files);
+      // Store the loaded files first, before any API calls
       setLoadedImages(files);
       setImageLoadError(null);
+
+      // Auto-populate labels if we have detected labels
+      if (detectedLabels && detectedLabels.length > 0) {
+        console.log("Auto-populating labels from CSV:", detectedLabels);
+
+        // Create new labels based on detected ones
+        const newLabels = detectedLabels
+          .map((label) => label.trim())
+          .filter((label) => label);
+
+        // Update labels state
+        if (newLabels.length > 0) {
+          setLabels(newLabels);
+        }
+      }
+
+      // Handle CSV-only upload with labels
+      if (uploadType === "csv-with-labels") {
+        const labelColumn = extraParam;
+        console.log(
+          `Processing CSV-only upload with label column: ${labelColumn}`
+        );
+        setImageLoadError(
+          `Processing CSV file with labels (using column: ${labelColumn})...`
+        );
+
+        // Store info for when Start Project is clicked
+        setLoadedImages({
+          type: "csv-with-labels",
+          files: files,
+          labelColumn: labelColumn,
+          detectedLabels: detectedLabels,
+        });
+
+        setImageLoadError(`CSV with labels processed. Please click "Start Project" to begin. 
+          Note: The system will try to find the image files at the paths in your CSV.`);
+        return;
+      }
+
+      // Rest of the function remains unchanged...
     } catch (error) {
-      setImageLoadError("Failed to upload images: " + error.message);
-      setLoadedImages([]);
+      console.error("Upload error:", error);
+      setImageLoadError("Failed to upload: " + error.message);
     }
   };
 
@@ -393,10 +505,15 @@ const ActiveLearningUI = () => {
     return () => clearInterval(interval);
   }, [isInitialized, isRetraining]);
 
-  // Initialize project and start new batch
+  // Complete handleStartProject function for annotation.jsx
   const handleStartProject = async () => {
     if (!projectName || labels.length === 0) {
       setImageLoadError("Please set project name and labels");
+      return;
+    }
+
+    if (loadedImages.length === 0) {
+      setImageLoadError("Please upload images or a CSV file with image paths");
       return;
     }
 
@@ -417,11 +534,244 @@ const ActiveLearningUI = () => {
         learning_rate: lrConfig.initial_lr,
       });
 
+      console.log("Project initialized:", initResult);
       setIsInitialized(true);
 
-      if (loadedImages.length > 0) {
+      // Check if we have a special CSV upload with annotations
+      setImageLoadError(
+        `Processing CSV with annotations (using column: ${loadedImages.labelColumn})...`
+      );
+
+      const result = await activeLearnAPI.uploadCSVPathsWithLabels(
+        loadedImages.files,
+        loadedImages.labelColumn,
+        loadedImages.delimiter || ",",
+        valSplit,
+        initialLabeledRatio
+      );
+
+      console.log("CSV with annotations processed:", result);
+
+      // Update labels from label mapping
+      if (result.label_mapping) {
+        // Get existing labels
+        const existingLabels = [...labels];
+
+        // Create a map of label text to label index
+        const newLabels = [...existingLabels];
+
+        // Add labels from mapping
+        Object.keys(result.label_mapping).forEach((labelText) => {
+          const labelIndex = result.label_mapping[labelText];
+
+          // Ensure we have enough space in the array
+          while (newLabels.length <= labelIndex) {
+            newLabels.push("");
+          }
+
+          // Only update empty labels or add new ones
+          if (!newLabels[labelIndex] || newLabels[labelIndex] === "") {
+            newLabels[labelIndex] = labelText;
+          }
+        });
+
+        // Remove any remaining empty labels
+        const finalLabels = newLabels.filter((label) => label);
+
+        if (finalLabels.length > 0) {
+          setLabels(finalLabels);
+          console.log("Updated labels from CSV:", finalLabels);
+        }
+      }
+
+      // Handle CSV-only upload with labels (detection from existing code)
+      else if (loadedImages.type === "csv-with-labels") {
+        setImageLoadError(
+          `Processing CSV with labels (${loadedImages.labelColumn})...`
+        );
+
+        const result = await activeLearnAPI.uploadCSVPathsWithLabels(
+          loadedImages.file,
+          loadedImages.labelColumn,
+          loadedImages.delimiter || ",",
+          valSplit,
+          initialLabeledRatio
+        );
+
+        console.log("CSV with labels processed:", result);
+
+        // Update labels from label mapping
+        if (result.label_mapping) {
+          const newLabels = [...labels];
+          Object.keys(result.label_mapping).forEach((labelText) => {
+            const labelIndex = result.label_mapping[labelText];
+            if (
+              typeof newLabels[labelIndex] === "undefined" ||
+              newLabels[labelIndex] === ""
+            ) {
+              // Fill any gaps with empty labels
+              while (newLabels.length <= labelIndex) {
+                newLabels.push("");
+              }
+              newLabels[labelIndex] = labelText;
+            }
+          });
+
+          if (newLabels.length > 0) {
+            setLabels(newLabels);
+          }
+        }
+
+        setImageLoadError(
+          `Successfully loaded ${result.stats.total} images (${result.stats.labeled} with labels, ${result.stats.unlabeled} unlabeled, ${result.stats.validation} for validation)`
+        );
+
+        // Start training if we have enough labeled data
+        if (result.stats.labeled > 0) {
+          setImageLoadError("Starting initial training with annotated data...");
+
+          try {
+            const episodeResult = await activeLearnAPI.startEpisode(
+              epochs,
+              batchSize
+            );
+
+            console.log("Initial training result:", episodeResult);
+
+            if (episodeResult.final_val_acc) {
+              setValidationAccuracy(episodeResult.final_val_acc);
+            }
+
+            setImageLoadError(
+              "Initial training complete - Starting active learning"
+            );
+          } catch (error) {
+            console.error("Initial training error:", error);
+            setImageLoadError("Initial training error: " + error.message);
+          }
+        }
+
+        // Get first batch for active learning
+        await getNextBatch();
+      }
+      // Check if we have a special combined upload with labels
+      else if (loadedImages.type === "combined-with-labels") {
+        setImageLoadError(
+          `Processing CSV with labels (${loadedImages.labelColumn}) and images together...`
+        );
+        const result = await activeLearnAPI.uploadCombinedWithLabels(
+          loadedImages.files,
+          loadedImages.labelColumn,
+          valSplit,
+          initialLabeledRatio
+        );
+        console.log("CSV with labels processed:", result);
+
+        // Update labels from label mapping if needed
+        if (result.label_mapping) {
+          const newLabels = [...labels];
+          Object.keys(result.label_mapping).forEach((labelText) => {
+            const labelIndex = result.label_mapping[labelText];
+            if (
+              typeof newLabels[labelIndex] === "undefined" ||
+              newLabels[labelIndex] === ""
+            ) {
+              // Fill any gaps with empty labels
+              while (newLabels.length <= labelIndex) {
+                newLabels.push("");
+              }
+              newLabels[labelIndex] = labelText;
+            }
+          });
+
+          if (newLabels.length > 0) {
+            setLabels(newLabels);
+          }
+        }
+
+        setImageLoadError(
+          `Successfully loaded ${result.stats.total} images (${result.stats.labeled} with labels, ${result.stats.unlabeled} unlabeled, ${result.stats.validation} for validation)`
+        );
+
+        // Start training if we have enough labeled data
+        if (result.stats.labeled > 0) {
+          setImageLoadError("Starting initial training with annotated data...");
+
+          try {
+            const episodeResult = await activeLearnAPI.startEpisode(
+              epochs,
+              batchSize
+            );
+
+            console.log("Initial training result:", episodeResult);
+
+            if (episodeResult.final_val_acc) {
+              setValidationAccuracy(episodeResult.final_val_acc);
+            }
+
+            setImageLoadError("Initial training complete");
+          } catch (error) {
+            console.error("Initial training error:", error);
+            setImageLoadError("Initial training error: " + error.message);
+          }
+        }
+
+        // Get batch for active learning
+        await getNextBatch();
+      }
+      // Handle the case where we have both CSV and image files (combined upload without labels)
+      else if (loadedImages.type === "combined") {
+        setImageLoadError("Processing CSV and image files together...");
+        const result = await activeLearnAPI.uploadCombined(
+          loadedImages.files,
+          valSplit,
+          initialLabeledRatio
+        );
+        console.log("Combined upload processed:", result);
+        setImageLoadError(
+          `Successfully processed ${result.split_info.total_images} images`
+        );
+
+        // Get first batch for active learning
+        await getNextBatch();
+      }
+      // Handle CSV-only upload
+      else if (loadedImages.type === "csv") {
+        setImageLoadError("Processing CSV file with image paths...");
+
+        // Get the CSV file and delimiter
+        const csvFile = loadedImages.file;
+
+        // Use stored delimiter
+        const delimiter = loadedImages.delimiter || ",";
+
+        try {
+          const result = await activeLearnAPI.uploadCSVPaths(
+            csvFile,
+            delimiter,
+            valSplit,
+            initialLabeledRatio
+          );
+          console.log("CSV processing result:", result);
+          setImageLoadError(
+            `Successfully loaded ${result.split_info.total_images} images from CSV`
+          );
+
+          // Get first batch for active learning
+          await getNextBatch();
+        } catch (error) {
+          console.error("CSV upload error:", error);
+          setImageLoadError(
+            `Error processing CSV: ${error.message}. Try uploading images directly or using the "Upload CSV + Images Together" option.`
+          );
+          setIsInitialized(false);
+          setIsLoading(false);
+          return;
+        }
+      }
+      // Handle regular image upload
+      else {
         setImageLoadError("Setting up initial dataset...");
-        // Pass configurations to data upload
         const result = await activeLearnAPI.uploadData(
           loadedImages,
           valSplit,
@@ -429,6 +779,7 @@ const ActiveLearningUI = () => {
         );
         console.log("Data split result:", result);
 
+        // Get first batch of images
         setImageLoadError("Getting first batch of images...");
         await getNextBatch();
         setImageLoadError(null);
@@ -440,38 +791,108 @@ const ActiveLearningUI = () => {
     } finally {
       setIsLoading(false);
     }
-  };
 
-  const handleModelImport = async (file) => {
     try {
-      setImageLoadError("Importing model...");
-      const result = await activeLearnAPI.importModel(file);
+      // Get first batch for active learning
+      setImageLoadError("Getting first batch of images...");
+      await getNextBatch();
+      setImageLoadError("Ready for active learning");
+    } catch (batchError) {
+      console.error("Failed to get first batch:", batchError);
+      setImageLoadError(
+        `Failed to get first batch: ${batchError.message}. Trying recovery...`
+      );
 
-      // Update all relevant state
-      setProjectName(result.project_name);
-      setIsInitialized(true);
-
-      // Update training parameters if available
-      if (result.training_config) {
-        setSamplingStrategy(
-          result.training_config.sampling_strategy || "least_confidence"
+      // Try to recover with simple random sampling
+      try {
+        const result = await activeLearnAPI.recoverBatch(
+          "random",
+          Math.min(batchSize, status.unlabeled_count || 32)
         );
-        setBatchSize(result.training_config.batch_size || 32);
-        setEpochs(result.training_config.epochs || 10);
+        console.log("Batch recovery succeeded:", result);
+        setCurrentBatch(result);
+        setCurrentImageIndex(0);
+        if (result.length > 0) {
+          setCurrentImage(activeLearnAPI.getImageUrl(result[0].image_id));
+        }
+        setImageLoadError(
+          "Recovered from error. Using simple random sampling for first batch."
+        );
+      } catch (recoveryError) {
+        console.error("Batch recovery also failed:", recoveryError);
+        setImageLoadError(
+          "Could not retrieve images for labeling. Try changing batch size or sampling strategy."
+        );
       }
+    }
 
-      // Update metrics if available
-      if (result.metrics) {
-        setMetrics(result.metrics);
-      }
+    // Add this to the image processing error handling in handleStartProject
+    if (
+      error.message &&
+      error.message.includes(
+        "Could not find or process any images from the CSV"
+      )
+    ) {
+      // Show more helpful error message
+      setImageLoadError(
+        `Image file path issue: The system couldn't find the image files referenced in your CSV. 
+     This usually happens when the paths in the CSV don't match where images are stored on your system.
+     
+     Possible solutions:
+     1. Use absolute paths in your CSV
+     2. Place images in the same folder as your application
+     3. Update your CSV with correct relative paths
+     4. Try using just filenames (without directory paths) in your CSV
+     
+     Current working directory: ${error.current_working_directory || "unknown"}
+     `
+      );
 
-      setImageLoadError("Model imported successfully!");
-    } catch (error) {
-      console.error("Import error:", error);
-      setImageLoadError("Failed to import model: " + error.message);
-      setIsInitialized(false);
+      // Show debug dialog with CSV details
+      const debugCSV = async () => {
+        try {
+          const result = await activeLearnAPI.debugCSVFile(loadedImages.file);
+          console.log("CSV debug result:", result);
+          // Show sample paths in error message
+          if (result.sample_rows && result.sample_rows.length > 0) {
+            const filePathColumn = Object.keys(result.sample_rows[0])[0]; // First column
+            const samplePaths = result.sample_rows
+              .map((row) => row[filePathColumn])
+              .join("\n");
+            setImageLoadError(
+              `Sample paths from CSV:\n${samplePaths}\n\nCurrent directory: ${result.current_directory}\n` +
+                `The system searched in: ${result.search_directories.join(
+                  ", "
+                )}`
+            );
+          }
+        } catch (debugError) {
+          console.error("CSV debug error:", debugError);
+        }
+      };
+
+      debugCSV();
+    } else {
+      // Regular error handling
+      setImageLoadError(error.message);
     }
   };
+
+  async function debugCSVFile(csvFile) {
+    const formData = new FormData();
+    formData.append("csv_file", csvFile);
+
+    const response = await fetch(`${API_URL}/debug-csv-file`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to debug CSV file: ${response.statusText}`);
+    }
+
+    return await response.json();
+  }
 
   useEffect(() => {
     let interval;
@@ -487,17 +908,6 @@ const ActiveLearningUI = () => {
     }
     return () => clearInterval(interval);
   }, [isInitialized]);
-
-  const handleGetNextBatch = async () => {
-    try {
-      await activeLearnAPI.getNextBatch();
-      setImageLoadError("New batch loaded");
-      // Refresh current batch display
-      await getNextBatch(); // your existing batch fetching function
-    } catch (error) {
-      setImageLoadError("Failed to get next batch: " + error.message);
-    }
-  };
 
   useEffect(() => {
     let interval;
@@ -516,6 +926,27 @@ const ActiveLearningUI = () => {
 
   const handleStartAutomatedTraining = async () => {
     try {
+      // Check if project is initialized first
+      if (!isInitialized) {
+        setImageLoadError(
+          "Please initialize the project with Start Project before starting automated training."
+        );
+        return;
+      }
+
+      // Check if images are loaded
+      if (currentBatch.length === 0) {
+        setImageLoadError(
+          "No images loaded. Please ensure images are loaded before starting training."
+        );
+        try {
+          await getNextBatch();
+        } catch (error) {
+          console.error("Failed to get batch before training:", error);
+          return;
+        }
+      }
+
       // Make sure these values exist and are the correct type
       console.log("Starting automated training with:", {
         epochs,
@@ -607,12 +1038,36 @@ const ActiveLearningUI = () => {
     }
   }, [isInitialized]);
 
+  useEffect(() => {
+    // When currentBatch changes (like after loading a new batch)
+    if (currentBatch.length > 0) {
+      console.log(`New batch loaded with ${currentBatch.length} images`);
+
+      // Reset batch stats whenever a new batch is loaded
+      setBatchStats({
+        totalImages: currentBatch.length,
+        completed: 0,
+        remaining: currentBatch.length,
+        accuracy: validationAccuracy || 0.85,
+        timeElapsed: "00:00",
+      });
+
+      // Reset batch progress state
+      setIsBatchInProgress(true);
+      setCurrentImageIndex(0);
+    }
+  }, [currentBatch]);
+
   return (
     <div className="container mx-auto p-6">
       <div className="grid grid-cols-2 gap-6">
         {/* Left Column - Project Configuration */}
         <div>
           <Tabs value={activeTab} onValueChange={setActiveTab} className="mb-6">
+            <TabsList className="grid grid-cols-2">
+              <TabsTrigger value="new">New Project</TabsTrigger>
+              <TabsTrigger value="import">Import Pretrained</TabsTrigger>
+            </TabsList>
             <TabsContent value="new">
               <Card>
                 <CardHeader>
@@ -919,7 +1374,6 @@ const ActiveLearningUI = () => {
                       />
                     )}
                     <div>
-                      <ValidationProgress status={validationStatus} />
                       <ActiveLearningStatus
                         status={status}
                         onStartNewBatch={handleStartNewBatch}
@@ -930,31 +1384,8 @@ const ActiveLearningUI = () => {
                       onLoad={handleLoadCheckpoint}
                       checkpoints={checkpoints}
                     />
-                    {/* Model Import/Export */}
                     <div className="space-y-4">
                       <div className="flex gap-4">
-                        <Button
-                          onClick={() => {
-                            const input = document.createElement("input");
-                            input.type = "file";
-                            input.accept = ".pt";
-                            input.onchange = async (e) => {
-                              try {
-                                const file = e.target.files[0];
-                                await handleModelImport(file);
-                              } catch (error) {
-                                setImageLoadError(
-                                  "Failed to import model: " + error.message
-                                );
-                              }
-                            };
-                            input.click();
-                          }}
-                          disabled={isInitialized || isBatchInProgress}
-                        >
-                          <Upload className="h-4 w-4 mr-2" />
-                          Import Model
-                        </Button>
                         <Button
                           onClick={async () => {
                             try {
@@ -984,6 +1415,46 @@ const ActiveLearningUI = () => {
                   </div>
                 </CardContent>
               </Card>
+            </TabsContent>
+            <TabsContent value="import">
+              <div className="space-y-6">
+                <PretrainedModelImport
+                  onImportSuccess={(result) => {
+                    setProjectName(result.project_name);
+                    setSelectedModel(result.model_type);
+                    setIsInitialized(true);
+                    setImageLoadError(
+                      "Pre-trained model imported successfully!"
+                    );
+
+                    // Fetch any needed state updates
+                    activeLearnAPI.getStatus().then((status) => {
+                      setStatus(status);
+                    });
+
+                    activeLearnAPI.getMetrics().then((metrics) => {
+                      setMetrics(metrics);
+                    });
+                  }}
+                  onError={(errorMsg) => {
+                    setImageLoadError(errorMsg);
+                  }}
+                />
+
+                {isInitialized && (
+                  <ModelAdaptationControls
+                    onAdaptSuccess={(result) => {
+                      setImageLoadError(
+                        `Model adaptation successful using ${result.adaptation_type} strategy`
+                      );
+                    }}
+                    onError={(errorMsg) => {
+                      setImageLoadError(`Adaptation error: ${errorMsg}`);
+                    }}
+                    disabled={!isInitialized || isRetraining}
+                  />
+                )}
+              </div>
             </TabsContent>
           </Tabs>
           {/* In your metrics section */}

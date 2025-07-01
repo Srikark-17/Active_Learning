@@ -109,21 +109,132 @@ const activeLearnAPI = {
   },
 
   async startEpisode(epochs = 10, batchSize = 32, learningRate = 0.001) {
-    const response = await fetch(`${API_URL}/train-episode`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        epochs: epochs,
-        batch_size: batchSize,
-        learning_rate: learningRate,
-      }),
-    });
+    try {
+      const response = await fetch(`${API_URL}/train-episode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          epochs: epochs,
+          batch_size: batchSize,
+          learning_rate: learningRate,
+        }),
+      });
 
-    if (!response.ok) {
-      throw new Error(`Failed to start episode: ${response.statusText}`);
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(
+          error.detail || `Failed to start episode: ${response.statusText}`
+        );
+      }
+
+      const result = await response.json();
+
+      // If training succeeded but getting next batch failed, handle that separately
+      if (result.status === "success" && result.error_getting_batch) {
+        console.warn(
+          "Training succeeded but couldn't get next batch:",
+          result.error_getting_batch
+        );
+
+        // Try to get batch manually
+        try {
+          await this.getNextBatch(result.strategy || "random", batchSize);
+          // If that worked, return the original result without the error
+          delete result.error_getting_batch;
+          return result;
+        } catch (batchError) {
+          console.error("Manual batch retrieval also failed:", batchError);
+          // Continue with the original result if manual retrieval fails
+        }
+      }
+
+      return result;
+    } catch (error) {
+      console.error("Error in startEpisode:", error);
+      throw error;
     }
+  },
 
-    return await response.json();
+  async recoverBatch(strategy = "random", batchSize = 32) {
+    try {
+      console.log(
+        `Attempting to recover batch with strategy: ${strategy}, size: ${batchSize}`
+      );
+
+      // Try to get a new batch with a simpler strategy
+      const response = await fetch(`${API_URL}/recover-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy: strategy,
+          batch_size: batchSize,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || "Failed to recover batch");
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("Batch recovery failed:", error);
+      throw error;
+    }
+  },
+  // Add to activelearning.js
+  async getBatchSafe(strategy = "least_confidence", batchSize = 32) {
+    try {
+      // Ensure valid parameters
+      const validStrategy = strategy || "least_confidence";
+      const validBatchSize = parseInt(batchSize) || 32;
+
+      console.log(
+        `Getting batch with strategy: ${validStrategy}, size: ${validBatchSize}`
+      );
+
+      const response = await fetch(`${API_URL}/get-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy: validStrategy,
+          batch_size: validBatchSize,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || "Failed to get batch");
+      }
+
+      return response.json();
+    } catch (error) {
+      console.error("getBatchSafe error:", error);
+
+      // Try with fallback random strategy
+      try {
+        console.log("Attempting fallback with random strategy");
+        const response = await fetch(`${API_URL}/get-batch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            strategy: "random",
+            batch_size: Math.min(parseInt(batchSize) || 32, 10),
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error("Fallback also failed");
+        }
+
+        return response.json();
+      } catch (fallbackError) {
+        console.error("Fallback failed:", fallbackError);
+        throw new Error(
+          "Failed to get batch with both regular and fallback strategies"
+        );
+      }
+    }
   },
 
   async getStatus() {
@@ -302,6 +413,169 @@ const activeLearnAPI = {
   listCheckpoints: async () => {
     const response = await fetch(`${API_URL}/list-checkpoints`);
     return response.json();
+  },
+
+  async importPretrainedModel(file, modelType, numClasses, projectName) {
+    const formData = new FormData();
+    formData.append("uploaded_file", file);
+    formData.append("model_type", modelType);
+    formData.append("num_classes", numClasses);
+    formData.append("project_name", projectName);
+
+    const response = await fetch(`${API_URL}/import-pretrained-model`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to import pre-trained model");
+    }
+
+    return await response.json();
+  },
+
+  async adaptPretrainedModel(freezeLayers, adaptationType) {
+    const formData = new FormData();
+    formData.append("freeze_layers", freezeLayers);
+    formData.append("adaptation_type", adaptationType);
+
+    const response = await fetch(`${API_URL}/adapt-pretrained-model`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to adapt model");
+    }
+
+    return await response.json();
+  },
+
+  async verifyModelCompatibility(file) {
+    const formData = new FormData();
+    formData.append("uploaded_file", file);
+
+    const response = await fetch(`${API_URL}/verify-model-compatibility`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to verify model compatibility");
+    }
+
+    return await response.json();
+  },
+
+  async uploadCSVPaths(
+    csvFile,
+    delimiter = ",",
+    valSplit,
+    initialLabeledRatio
+  ) {
+    const formData = new FormData();
+    formData.append("csv_file", csvFile);
+    formData.append("delimiter", delimiter);
+
+    if (valSplit !== undefined) {
+      formData.append("val_split", valSplit);
+    }
+    if (initialLabeledRatio !== undefined) {
+      formData.append("initial_labeled_ratio", initialLabeledRatio);
+    }
+
+    const response = await fetch(`${API_URL}/upload-csv-paths`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(
+        error.detail || `Failed to upload CSV paths: ${response.statusText}`
+      );
+    }
+
+    return await response.json();
+  },
+
+  async uploadCombinedWithLabels(
+    files,
+    labelColumn = "label",
+    valSplit,
+    initialLabeledRatio
+  ) {
+    const formData = new FormData();
+
+    // Add all files to the form data
+    files.forEach((file) => {
+      formData.append("files", file);
+    });
+
+    formData.append("label_column", labelColumn);
+
+    if (valSplit !== undefined) {
+      formData.append("val_split", valSplit);
+    }
+    if (initialLabeledRatio !== undefined) {
+      formData.append("initial_labeled_ratio", initialLabeledRatio);
+    }
+
+    const response = await fetch(`${API_URL}/upload-combined-with-labels`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(
+        error.detail ||
+          `Failed to upload files with labels: ${response.statusText}`
+      );
+    }
+
+    return await response.json();
+  },
+  // Add this method to activeLearnAPI.js
+
+  // In activelearning.js - Enhanced version of uploadCSVPathsWithLabels
+  async uploadCSVPathsWithLabels(
+    csvFile,
+    labelColumn = "annotation", // Update default to match your CSV
+    delimiter = ",",
+    valSplit,
+    initialLabeledRatio
+  ) {
+    const formData = new FormData();
+
+    formData.append("csv_file", csvFile);
+    formData.append("label_column", labelColumn);
+    formData.append("delimiter", delimiter);
+
+    if (valSplit !== undefined) {
+      formData.append("val_split", valSplit);
+    }
+    if (initialLabeledRatio !== undefined) {
+      formData.append("initial_labeled_ratio", initialLabeledRatio);
+    }
+
+    const response = await fetch(`${API_URL}/upload-csv-paths-with-labels`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(
+        error.detail ||
+          `Failed to upload CSV with labels: ${response.statusText}`
+      );
+    }
+
+    return await response.json();
   },
 };
 

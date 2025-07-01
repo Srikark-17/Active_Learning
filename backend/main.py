@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, HTTPException, File
+from fastapi import FastAPI, UploadFile, HTTPException, File, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
 import torch
 import torch.nn as nn
@@ -7,19 +7,21 @@ import numpy as np
 from PIL import Image
 import io
 import os
+import random
 from datetime import datetime
 import matplotlib.pyplot as plt
-from fastapi import Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Literal
+from typing import Literal, List, Tuple
 import json
 import time
-from typing import List, Tuple
 import types
 import asyncio
 import glob
 import shutil
+import tempfile
+import traceback
+from model_utils import safe_load_model
 
 class ProjectInit(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
@@ -145,24 +147,46 @@ class ActiveLearningManager:
 
     def initialize_project(self, project_name: str, model_name: str, num_classes: int, config: dict = None):
         try:
-            # Validation checks
+            # Validation checks with more flexibility
             if not project_name:
                 raise ValueError("Project name is required")
-            if model_name not in ["resnet18", "resnet50"]:
-                raise ValueError("Model type must be either 'resnet18' or 'resnet50'")
-            if num_classes <= 0:
-                raise ValueError("Number of classes must be greater than 0")
                 
+            # More flexible model type handling
+            valid_models = ["resnet18", "resnet50", "efficientnet", "densenet", "mobilenet", "custom"]
+            if model_name not in valid_models:
+                print(f"Warning: Unknown model type '{model_name}'. Treating as 'custom'")
+                model_name = "custom"  # Fallback to custom
+                    
             # Set up project
             self.project_name = project_name
             self.output_dir = os.path.join("output", project_name, 
                 datetime.now().strftime("%Y%m%d_%H%M%S"))
             os.makedirs(self.output_dir, exist_ok=True)
                 
-            # Initialize model first
+            # Initialize model based on type
             if model_name == "resnet18":
                 self.model = models.resnet18(pretrained=True)
             elif model_name == "resnet50":
+                self.model = models.resnet50(pretrained=True)
+            elif model_name == "efficientnet":
+                # Use ResNet50 as a fallback but print a notice
+                print("EfficientNet not directly supported - using ResNet50 as base architecture")
+                self.model = models.resnet50(pretrained=True)
+            elif model_name == "densenet":
+                # Use ResNet50 as a fallback but print a notice
+                print("DenseNet not directly supported - using ResNet50 as base architecture")
+                self.model = models.resnet50(pretrained=True)
+            elif model_name == "mobilenet":
+                # Use ResNet50 as a fallback but print a notice
+                print("MobileNet not directly supported - using ResNet50 as base architecture")
+                self.model = models.resnet50(pretrained=True)
+            elif model_name == "custom":
+                # For custom models, use ResNet50 as the base architecture
+                print("Using ResNet50 as base architecture for custom model")
+                self.model = models.resnet50(pretrained=True)
+            else:
+                # Should never reach here due to validation above, but just in case
+                print(f"Unsupported model type: {model_name}, using ResNet50")
                 self.model = models.resnet50(pretrained=True)
                 
             # Modify final layer for our number of classes
@@ -303,7 +327,7 @@ class ActiveLearningManager:
 
     def get_next_batch(self, strategy: str, batch_size: int) -> List[dict]:
         """
-        Select next batch of samples using specified strategy
+        Select next batch of samples using specified strategy with improved error handling
         Args:
             strategy: Sampling strategy to use
             batch_size: Number of samples to select
@@ -315,17 +339,79 @@ class ActiveLearningManager:
 
         if len(self.unlabeled_data) == 0:
             raise HTTPException(status_code=400, detail="No unlabeled data available")
-
-        # Get uncertainty scores for all unlabeled samples
-        sample_scores = self._get_sample_scores(strategy)
-        
-        # Select samples based on strategy
-        selected_samples = self._select_samples(sample_scores, batch_size, strategy)
-        
-        # Update current batch
-        self.current_batch = [x["image_id"] for x in selected_samples]
-        
-        return selected_samples
+            
+        # Ensure batch size isn't too large
+        if batch_size > len(self.unlabeled_data):
+            print(f"Warning: Requested batch size {batch_size} is larger than available unlabeled data ({len(self.unlabeled_data)})")
+            batch_size = len(self.unlabeled_data)
+            
+        # Add safety check for very small batch sizes
+        if batch_size <= 0:
+            batch_size = min(32, len(self.unlabeled_data))  # Default to 32 or smaller if not enough data
+            
+        try:
+            # Get uncertainty scores for all unlabeled samples
+            sample_scores = self._get_sample_scores(strategy)
+            
+            # Select samples based on strategy
+            selected_samples = self._select_samples(sample_scores, batch_size, strategy)
+            
+            # Update current batch
+            self.current_batch = [x["image_id"] for x in selected_samples]
+            
+            return selected_samples
+        except Exception as e:
+            print(f"Error in get_next_batch: {str(e)}")
+            traceback.print_exc()
+            
+            # Try with random sampling as fallback
+            if strategy != "random":
+                print("Falling back to random sampling strategy")
+                try:
+                    # Implement simple random sampling directly
+                    image_ids = list(self.unlabeled_data.keys())
+                    selected_ids = random.sample(image_ids, min(batch_size, len(image_ids)))
+                    
+                    selected_samples = []
+                    for img_id in selected_ids:
+                        # Get image tensor
+                        img_tensor = self.unlabeled_data[img_id].unsqueeze(0).to(self.device)
+                        
+                        # Get model predictions without trying to compute uncertainty
+                        with torch.no_grad():
+                            try:
+                                outputs = self.model(img_tensor)
+                                probs = torch.softmax(outputs, dim=1)
+                                
+                                # Create prediction list
+                                predictions = [
+                                    {"label": f"Label {i}", "confidence": float(p)} 
+                                    for i, p in enumerate(probs[0])
+                                ]
+                                
+                                selected_samples.append({
+                                    "image_id": img_id,
+                                    "uncertainty": 0.5,  # Default uncertainty
+                                    "predictions": predictions
+                                })
+                            except Exception as inner_e:
+                                # If even simple prediction fails, use minimal info
+                                print(f"Error making predictions: {str(inner_e)}")
+                                selected_samples.append({
+                                    "image_id": img_id,
+                                    "uncertainty": 0.5,  # Default uncertainty
+                                    "predictions": [{"label": "Unknown", "confidence": 0.0}]
+                                })
+                    
+                    self.current_batch = [x["image_id"] for x in selected_samples]
+                    return selected_samples
+                except Exception as fallback_e:
+                    print(f"Fallback strategy also failed: {str(fallback_e)}")
+                    traceback.print_exc()
+                    raise
+            else:
+                # If we're already using random sampling and it failed, re-raise
+                raise
     
     def _get_sample_scores(self, strategy: str) -> List[Tuple[int, float, List[dict]]]:
         """
@@ -1057,6 +1143,198 @@ class ActiveLearningManager:
             "unlabeled": total - labeled,
             "percent_labeled": (labeled / total * 100) if total > 0 else 0
         }
+    
+    def adapt_transformer_to_resnet(vit_state_dict, resnet_model, num_classes=None):
+        """
+        Adapt a Vision Transformer (ViT) model to a ResNet architecture
+        by transferring compatible weights and knowledge.
+        
+        Args:
+            vit_state_dict: State dict from a Vision Transformer model
+            resnet_model: The target ResNet model
+            num_classes: Number of output classes (if known)
+        
+        Returns:
+            Tuple of (success flag, message)
+        """
+        # First ensure we have the correct output size if num_classes is provided
+        if num_classes is not None:
+            # Resize the final layer
+            in_features = resnet_model.fc.in_features
+            resnet_model.fc = torch.nn.Linear(in_features, num_classes)
+        
+        # Initialize a dictionary to track transferred knowledge
+        transferred_knowledge = {
+            "visual_features": False,
+            "classification_head": False
+        }
+        
+        # Check if we can use patch embeddings as initial layers
+        if 'patch_embed.proj.weight' in vit_state_dict:
+            # Extract the patch embedding weights
+            patch_weights = vit_state_dict['patch_embed.proj.weight']
+            
+            # Check if the shape is compatible with the first convolutional layer
+            try:
+                first_conv = None
+                # Find the first conv layer in ResNet
+                if hasattr(resnet_model, 'conv1'):
+                    first_conv = resnet_model.conv1
+                
+                if first_conv is not None:
+                    # Check if shapes are compatible or can be adapted
+                    if patch_weights.shape[0] == first_conv.weight.shape[0]:  # Same number of output channels
+                        # We can initialize with the patch embedding knowledge
+                        new_weights = torch.nn.functional.interpolate(
+                            patch_weights, 
+                            size=first_conv.weight.shape[2:],  # Target kernel size
+                            mode='bilinear'
+                        )
+                        first_conv.weight.data = new_weights
+                        transferred_knowledge["visual_features"] = True
+            except Exception as e:
+                print(f"Could not transfer patch embedding knowledge: {e}")
+        
+        # Try to transfer classification head knowledge
+        if 'head.weight' in vit_state_dict and hasattr(resnet_model, 'fc'):
+            try:
+                vit_head_weight = vit_state_dict['head.weight']
+                vit_head_bias = vit_state_dict.get('head.bias', None)
+                
+                # Check if output dimensions match
+                if vit_head_weight.shape[0] == resnet_model.fc.weight.shape[0]:
+                    # If input dimensions don't match, we can use a simple projection
+                    if vit_head_weight.shape[1] != resnet_model.fc.weight.shape[1]:
+                        # Create a simple projection matrix
+                        projection = torch.zeros(
+                            resnet_model.fc.weight.shape[1],
+                            vit_head_weight.shape[1]
+                        )
+                        
+                        # Identity mapping for the smaller dimension
+                        min_dim = min(projection.shape[0], projection.shape[1])
+                        projection[:min_dim, :min_dim] = torch.eye(min_dim)
+                        
+                        # Project the weights
+                        new_weights = torch.matmul(vit_head_weight, projection.t())
+                        resnet_model.fc.weight.data = new_weights
+                    else:
+                        # Direct transfer
+                        resnet_model.fc.weight.data = vit_head_weight
+                    
+                    # Transfer bias if available
+                    if vit_head_bias is not None and hasattr(resnet_model.fc, 'bias'):
+                        resnet_model.fc.bias.data = vit_head_bias
+                    
+                    transferred_knowledge["classification_head"] = True
+            except Exception as e:
+                print(f"Could not transfer classification head knowledge: {e}")
+        
+        # Return success and information
+        if any(transferred_knowledge.values()):
+            return True, f"Adapted transformer model to ResNet. Transferred: {', '.join([k for k, v in transferred_knowledge.items() if v])}"
+        else:
+            return False, "Could not transfer knowledge from transformer to ResNet. Will only use initialization."
+
+    # Then update the existing adapt_pretrained_model method:
+    def adapt_pretrained_model(self, model_state, freeze_layers=True, adaptation_layers=None):
+        """
+        Adapt a pre-trained model for active learning by optionally freezing layers
+        and preparing the model for fine-tuning.
+        
+        Args:
+            model_state: State dict of the pretrained model
+            freeze_layers: Whether to freeze early layers
+            adaptation_layers: List of layer names to specifically adapt
+        """
+        try:
+            # Check if this is a transformer-based model
+            is_transformer = any(k in ['cls_token', 'pos_embed', 'patch_embed'] 
+                                for k in model_state.keys())
+            
+            if is_transformer:
+                print("Detected transformer-based model. Attempting specialized adaptation...")
+                success, message = self.adapt_transformer_to_resnet(
+                    model_state, 
+                    self.model,
+                    num_classes=self.model.fc.out_features if hasattr(self.model, 'fc') else None
+                )
+                if success:
+                    print(f"Transformer adaptation: {message}")
+                else:
+                    print("Transformer adaptation failed. Falling back to standard approach.")
+            
+            # Continue with standard adaptation
+            # Load the pretrained weights if not a transformer or transformer adaptation failed
+            if not is_transformer or not success:
+                if hasattr(self.model, 'load_state_dict'):
+                    # Try to load directly, with a non-strict option to allow for differences
+                    try:
+                        self.model.load_state_dict(model_state, strict=False)
+                        print("Loaded pretrained model weights (non-strict)")
+                    except Exception as e:
+                        print(f"Error loading model directly: {str(e)}")
+                        
+                        # Try to fix common key mismatches
+                        fixed_state_dict = {}
+                        for k, v in model_state.items():
+                            # Handle module prefix differences (common with DataParallel)
+                            if k.startswith('module.') and not any(key.startswith('module.') for key in self.model.state_dict()):
+                                fixed_state_dict[k[7:]] = v
+                            elif not k.startswith('module.') and any(key.startswith('module.') for key in self.model.state_dict()):
+                                fixed_state_dict['module.' + k] = v
+                            else:
+                                fixed_state_dict[k] = v
+                        
+                        # Try loading with fixed keys
+                        missing_keys, unexpected_keys = self.model.load_state_dict(fixed_state_dict, strict=False)
+                        print(f"Loaded with key fixing. Missing keys: {len(missing_keys)}, Unexpected keys: {len(unexpected_keys)}")
+                else:
+                    print("Model doesn't have load_state_dict method")
+                    return False
+            
+            # Freeze early layers if requested
+            if freeze_layers:
+                # For ResNet models, freeze all layers except final FC
+                if isinstance(self.model, (torch.nn.Module)):
+                    for name, param in self.model.named_parameters():
+                        # Don't freeze FC/classifier layers
+                        if 'fc' not in name and 'classifier' not in name:
+                            param.requires_grad = False
+                        else:
+                            print(f"Keeping {name} trainable")
+                            
+                print("Early layers frozen for transfer learning")
+            
+            # Modify specific adaptation layers if needed
+            if adaptation_layers:
+                # Example: add dropout or modify specific layers
+                for layer_name in adaptation_layers:
+                    if hasattr(self.model, layer_name):
+                        layer = getattr(self.model, layer_name)
+                        if layer_name == 'fc' and isinstance(layer, torch.nn.Linear):
+                            # Add dropout before FC layer
+                            in_features = layer.in_features
+                            out_features = layer.out_features
+                            dropout_layer = torch.nn.Dropout(0.5)
+                            new_fc = torch.nn.Sequential(
+                                dropout_layer,
+                                torch.nn.Linear(in_features, out_features)
+                            )
+                            setattr(self.model, layer_name, new_fc)
+                            print(f"Added dropout to {layer_name}")
+                            
+            # Reset optimizer with the new parameter settings
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(), 
+                lr=self.training_config['learning_rate']
+            )
+            
+            return True
+        
+        except Exception as e:
+            print(f"Error adapting pretrained model: {str(e)}")
+            return False
 
 class CheckpointManager:
     """Manages model checkpointing and state restoration"""
@@ -1141,13 +1419,52 @@ class AutomatedTrainingManager:
         self.current_batch = []
         self.last_training_start = None
         self.training_timeout = 300  # 5 minutes timeout
+        
+        # Ensure training_config is properly initialized with default values
         self.training_config = {
-            'sampling_strategy': None,
-            'batch_size': None,
-            'epochs': None,
-            'learning_rate': 0.001
+            'sampling_strategy': 'least_confidence',  # default strategy
+            'batch_size': 32,  # default batch size
+            'epochs': 10,  # default epochs
+            'learning_rate': 0.001  # default learning rate
         }
+        
         self.min_required_samples = 10
+
+    def update_config(self, config):
+        """Update training configuration safely"""
+        if not isinstance(config, dict):
+            print(f"Warning: config is not a dictionary: {type(config)}")
+            return
+            
+        # Update each field individually with type checking
+        if 'sampling_strategy' in config and isinstance(config['sampling_strategy'], str):
+            self.training_config['sampling_strategy'] = config['sampling_strategy']
+            
+        if 'batch_size' in config:
+            try:
+                batch_size = int(config['batch_size'])
+                if batch_size > 0:
+                    self.training_config['batch_size'] = batch_size
+            except (ValueError, TypeError):
+                print(f"Invalid batch_size: {config['batch_size']}")
+                
+        if 'epochs' in config:
+            try:
+                epochs = int(config['epochs'])
+                if epochs > 0:
+                    self.training_config['epochs'] = epochs
+            except (ValueError, TypeError):
+                print(f"Invalid epochs: {config['epochs']}")
+                
+        if 'learning_rate' in config:
+            try:
+                lr = float(config['learning_rate'])
+                if lr > 0:
+                    self.training_config['learning_rate'] = lr
+            except (ValueError, TypeError):
+                print(f"Invalid learning_rate: {config['learning_rate']}")
+                
+        print(f"Updated training config: {self.training_config}")
     
     def check_training_state(self):
         """Check if training state is stuck and reset if necessary"""
@@ -1468,6 +1785,124 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def adapt_pretrained_model(self, model_state, freeze_layers=True, adaptation_layers=None):
+    """
+    Adapt a pre-trained model for active learning by optionally freezing layers
+    and preparing the model for fine-tuning.
+    
+    Args:
+        model_state: State dict of the pretrained model
+        freeze_layers: Whether to freeze early layers
+        adaptation_layers: List of layer names to specifically adapt
+    """
+    try:
+        # Load the pretrained weights
+        if hasattr(self.model, 'load_state_dict'):
+            # Try to load directly, with a non-strict option to allow for differences
+            try:
+                self.model.load_state_dict(model_state, strict=False)
+                print("Loaded pretrained model weights (non-strict)")
+            except Exception as e:
+                print(f"Error loading model directly: {str(e)}")
+                
+                # Try to fix common key mismatches
+                fixed_state_dict = {}
+                for k, v in model_state.items():
+                    # Handle module prefix differences (common with DataParallel)
+                    if k.startswith('module.') and not any(key.startswith('module.') for key in self.model.state_dict()):
+                        fixed_state_dict[k[7:]] = v
+                    elif not k.startswith('module.') and any(key.startswith('module.') for key in self.model.state_dict()):
+                        fixed_state_dict['module.' + k] = v
+                    else:
+                        fixed_state_dict[k] = v
+                
+                # Try loading with fixed keys
+                missing_keys, unexpected_keys = self.model.load_state_dict(fixed_state_dict, strict=False)
+                print(f"Loaded with key fixing. Missing keys: {len(missing_keys)}, Unexpected keys: {len(unexpected_keys)}")
+        else:
+            print("Model doesn't have load_state_dict method")
+            return False
+        
+        # Freeze early layers if requested
+        if freeze_layers:
+            # For ResNet models, freeze all layers except final FC
+            if isinstance(self.model, (torch.nn.Module)):
+                for name, param in self.model.named_parameters():
+                    # Don't freeze FC/classifier layers
+                    if 'fc' not in name and 'classifier' not in name:
+                        param.requires_grad = False
+                    else:
+                        print(f"Keeping {name} trainable")
+                        
+            print("Early layers frozen for transfer learning")
+        
+        # Modify specific adaptation layers if needed
+        if adaptation_layers:
+            # Example: add dropout or modify specific layers
+            for layer_name in adaptation_layers:
+                if hasattr(self.model, layer_name):
+                    layer = getattr(self.model, layer_name)
+                    if layer_name == 'fc' and isinstance(layer, torch.nn.Linear):
+                        # Add dropout before FC layer
+                        in_features = layer.in_features
+                        out_features = layer.out_features
+                        dropout_layer = torch.nn.Dropout(0.5)
+                        new_fc = torch.nn.Sequential(
+                            dropout_layer,
+                            torch.nn.Linear(in_features, out_features)
+                        )
+                        setattr(self.model, layer_name, new_fc)
+                        print(f"Added dropout to {layer_name}")
+        
+        return True
+    
+    except Exception as e:
+        print(f"Error adapting pretrained model: {str(e)}")
+        return False
+
+# Add a new endpoint to perform model adaptation
+@app.post("/adapt-pretrained-model")
+async def adapt_pretrained_model(
+    freeze_layers: bool = Form(True),
+    adaptation_type: str = Form("full_finetune")
+):
+    """
+    Adapt a previously imported model for active learning
+    """
+    try:
+        if not al_manager.model:
+            raise HTTPException(status_code=400, detail="No model has been imported yet")
+        
+        # Get the current model state
+        model_state = al_manager.model.state_dict()
+        
+        # Determine adaptation layers based on adaptation type
+        adaptation_layers = None
+        if adaptation_type == "last_layer":
+            adaptation_layers = ["fc"]  # Only adapt final layer
+        elif adaptation_type == "mid_layers":
+            adaptation_layers = ["layer4", "fc"]  # Adapt last conv block and FC
+        
+        # Perform adaptation
+        success = al_manager.adapt_pretrained_model(
+            model_state=model_state,
+            freeze_layers=freeze_layers,
+            adaptation_layers=adaptation_layers
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to adapt model")
+        
+        return {
+            "status": "success",
+            "message": "Model adapted successfully",
+            "adaptation_type": adaptation_type,
+            "freeze_layers": freeze_layers
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Adaptation failed: {str(e)}")
+
 @app.post("/init")
 async def initialize_project(request: ProjectInit):
     """Initialize new active learning project with improved error handling"""
@@ -1640,33 +2075,62 @@ async def get_metrics():
 
 @app.get("/image/{image_id}")
 async def get_image(image_id: int):
-    """Get image data for display with improved error handling"""
+    """Get image data for display with improved error handling and debugging"""
     try:
         print(f"Serving image {image_id}")
+        
+        # Check if the ID is valid
+        if not isinstance(image_id, int) or image_id < 0:
+            print(f"Invalid image ID format: {image_id}")
+            raise HTTPException(status_code=400, detail="Invalid image ID format")
+        
+        # Get tensor based on where the image is stored
+        tensor = None
+        location = None
+        
         if image_id in al_manager.unlabeled_data:
             tensor = al_manager.unlabeled_data[image_id]
+            location = "unlabeled_data"
         elif image_id in al_manager.labeled_data:
             tensor = al_manager.labeled_data[image_id][0]
+            location = "labeled_data"
         elif image_id in al_manager.validation_data:
             tensor = al_manager.validation_data[image_id][0]
-        else:
+            location = "validation_data"
+        
+        if tensor is None:
             print(f"Image {image_id} not found in any dataset")
-            raise HTTPException(status_code=404, detail="Image not found")
+            print(f"Available IDs in unlabeled: {list(al_manager.unlabeled_data.keys())[:5]}...")
+            print(f"Available IDs in labeled: {list(al_manager.labeled_data.keys())[:5]}...")
+            print(f"Available IDs in validation: {list(al_manager.validation_data.keys())[:5]}...")
+            raise HTTPException(status_code=404, detail=f"Image {image_id} not found in any dataset")
+            
+        print(f"Found image {image_id} in {location}")
             
         # Ensure tensor is on CPU and in the right format
-        tensor = tensor.cpu()
+        try:
+            tensor = tensor.cpu()
+        except Exception as e:
+            print(f"Error moving tensor to CPU: {str(e)}")
+            raise HTTPException(status_code=500, detail="Error processing image tensor")
         
-        # Denormalize the tensor
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-        tensor = tensor * std + mean
-            
-        # Convert tensor to image
-        img_array = tensor.numpy().transpose(1, 2, 0)
-        img_array = np.clip(img_array, 0, 1)
-        img_array = (img_array * 255).astype(np.uint8)
+        # Check tensor shape and type
+        print(f"Tensor shape: {tensor.shape}, dtype: {tensor.dtype}")
         
         try:
+            # Denormalize the tensor
+            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            tensor = tensor * std + mean
+                
+            # Convert tensor to image
+            img_array = tensor.numpy().transpose(1, 2, 0)
+            img_array = np.clip(img_array, 0, 1)
+            img_array = (img_array * 255).astype(np.uint8)
+            
+            # Check array shape and values
+            print(f"Image array shape: {img_array.shape}, min: {img_array.min()}, max: {img_array.max()}")
+            
             img = Image.fromarray(img_array)
             
             # Save to byte stream with error handling
@@ -1686,12 +2150,19 @@ async def get_image(image_id: int):
                 headers=headers
             )
         except Exception as e:
-            print(f"Error converting tensor to image: {str(e)}")
-            raise HTTPException(status_code=500, detail="Error converting image")
+            error_msg = f"Error converting tensor to image: {str(e)}"
+            print(error_msg)
+            traceback.print_exc()  # Print full traceback
+            raise HTTPException(status_code=500, detail=error_msg)
             
+    except HTTPException:
+        # Re-raise HTTP exceptions directly
+        raise
     except Exception as e:
-        print(f"Error serving image {image_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = f"Error serving image {image_id}: {str(e)}"
+        print(error_msg)
+        traceback.print_exc()  # Print full traceback
+        raise HTTPException(status_code=500, detail=error_msg)
 
 @app.get("/export-model")
 async def export_model():
@@ -1870,10 +2341,100 @@ async def get_automated_training_status():
 
 @app.post("/get-next-batch")
 async def get_next_batch():
-    """Manually get next batch during automated training"""
+    """Manually get next batch during automated training with improved error handling"""
     try:
-        return await automated_trainer.get_new_batch()
+        print("\n=== Getting Next Batch ===")
+        print(f"Current state: Labeled data: {len(al_manager.labeled_data)}, Unlabeled data: {len(al_manager.unlabeled_data)}")
+        
+        # Make sure we have unlabeled data
+        if len(al_manager.unlabeled_data) == 0:
+            print("No unlabeled data available")
+            return {
+                "status": "error",
+                "error": "No unlabeled data available for batch selection",
+                "unlabeled_count": 0,
+                "labeled_count": len(al_manager.labeled_data),
+                "validation_count": len(al_manager.validation_data)
+            }
+        
+        # Make sure batch size is valid, with explicit type checking and fallbacks
+        batch_size = 32  # Default batch size
+        try:
+            config_batch_size = automated_trainer.training_config.get('batch_size')
+            if config_batch_size is not None and isinstance(config_batch_size, (int, float)) and config_batch_size > 0:
+                batch_size = int(config_batch_size)
+        except (AttributeError, TypeError) as e:
+            print(f"Error getting batch size from config: {str(e)}")
+            print(f"Using default batch size: {batch_size}")
+        
+        # Add safety check for batch size
+        if batch_size > len(al_manager.unlabeled_data):
+            print(f"Batch size {batch_size} is larger than available unlabeled data {len(al_manager.unlabeled_data)}")
+            # Adjust batch size automatically
+            batch_size = len(al_manager.unlabeled_data)
+            print(f"Adjusted batch size to {batch_size}")
+        
+        # Get strategy with fallbacks
+        strategy = "least_confidence"  # Default strategy
+        try:
+            config_strategy = automated_trainer.training_config.get('sampling_strategy')
+            if config_strategy is not None and isinstance(config_strategy, str):
+                strategy = config_strategy
+        except (AttributeError, TypeError) as e:
+            print(f"Error getting strategy from config: {str(e)}")
+            print(f"Using default strategy: {strategy}")
+            
+        print(f"Getting batch using strategy: {strategy}, batch size: {batch_size}")
+        
+        try:
+            batch = al_manager.get_next_batch(strategy=strategy, batch_size=batch_size)
+            
+            # Store batch information
+            try:
+                automated_trainer.current_batch = batch
+                automated_trainer.current_batch_size = len(batch)
+                automated_trainer.current_batch_labeled_count = 0
+            except Exception as config_error:
+                print(f"Error updating trainer state: {str(config_error)}")
+                # Continue even if we can't update the automated trainer state
+            
+            print(f"Successfully got batch of {len(batch)} images")
+            
+            return {
+                "status": "success",
+                "batch_size": len(batch),
+                "strategy": strategy
+            }
+        except Exception as e:
+            print(f"Error getting batch: {str(e)}")
+            traceback.print_exc()  # Print full stack trace
+            
+            # Try again with random strategy as fallback
+            try:
+                print("Trying fallback random sampling strategy")
+                batch = al_manager.get_next_batch(strategy="random", batch_size=batch_size)
+                
+                # Store batch information
+                try:
+                    automated_trainer.current_batch = batch
+                    automated_trainer.current_batch_size = len(batch)
+                    automated_trainer.current_batch_labeled_count = 0
+                except Exception as config_error:
+                    print(f"Error updating trainer state: {str(config_error)}")
+                
+                print(f"Successfully got batch using fallback strategy with {len(batch)} images")
+                
+                return {
+                    "status": "success",
+                    "batch_size": len(batch),
+                    "strategy": "random (fallback)"
+                }
+            except Exception as fallback_error:
+                print(f"Fallback strategy also failed: {str(fallback_error)}")
+                traceback.print_exc()
+                raise
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/reset-training-state")
@@ -1951,6 +2512,1006 @@ async def get_lr_scheduler_status():
             status_code=500, 
             detail=f"Failed to get scheduler status: {str(e)}"
         )
+
+@app.post("/import-pretrained-model")
+async def import_pretrained_model(
+    uploaded_file: UploadFile = File(...),
+    model_type: str = Form(...),
+    num_classes: int = Form(2),
+    project_name: str = Form("imported_project")
+):
+    """
+    Import a pre-trained model that wasn't created with this UI
+    """
+    try:
+        # Read model file
+        content = await uploaded_file.read()
+        
+        # Validate model type - now allowing additional model types
+        supported_models = ["resnet18", "resnet50", "efficientnet", "densenet", "mobilenet", "custom"]
+        
+        if model_type not in supported_models:
+            # If not in our supported list, automatically assign to "custom"
+            print(f"Model type '{model_type}' not in supported list, treating as 'custom'")
+            model_type = "custom"
+        
+        # Load model state
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        # Initialize model architecture based on type
+        if model_type == "custom":
+            # For custom models, we'll need to initialize one of our standard architectures 
+            # and then adapt it to match the imported model's structure
+            fallback_model_type = "resnet50"  # Use this as fallback
+            
+            # Initialize project with fallback model
+            if not al_manager.project_name:
+                init_result = al_manager.initialize_project(
+                    project_name=project_name,
+                    model_name=fallback_model_type,
+                    num_classes=num_classes
+                )
+        else:
+            # Initialize project with specified model
+            if not al_manager.project_name:
+                init_result = al_manager.initialize_project(
+                    project_name=project_name,
+                    model_name=model_type,
+                    num_classes=num_classes
+                )
+        
+        # Try to load the model using our safe utility
+        state_dict = safe_load_model(tmp_path)
+        
+        if state_dict is None:
+            # Clean up
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+                
+            raise ValueError("Failed to load model file with any method. The file may be corrupted or in an unsupported format.")
+            
+        # Extract the model state based on the structure
+        model_state = extract_model_state(state_dict)
+        
+        # Handle custom model structure (architecture adaptation)
+        if model_type == "custom":
+            # Try to detect the number of classes from the model state
+            try:
+                detected_classes = detect_num_classes(model_state)
+                if detected_classes and detected_classes != num_classes:
+                    print(f"Detected {detected_classes} classes in model, updating from {num_classes}")
+                    num_classes = detected_classes
+                    
+                    # Reinitialize the model with detected class count
+                    init_result = al_manager.initialize_project(
+                        project_name=project_name,
+                        model_name=fallback_model_type,
+                        num_classes=num_classes
+                    )
+            except Exception as e:
+                print(f"Could not detect classes: {str(e)}")
+        
+        # Attempt to load the state dict with flexible matching
+        try:
+            # First try direct loading
+            al_manager.model.load_state_dict(model_state, strict=False)
+            print("Loaded model state with non-strict matching")
+        except Exception as e:
+            print(f"Direct loading error: {str(e)}")
+            
+            # Try key remapping for common patterns
+            fixed_state_dict = {}
+            for k, v in model_state.items():
+                # Remove 'module.' prefix (from DataParallel models)
+                if k.startswith('module.'):
+                    fixed_state_dict[k[7:]] = v
+                # Add 'module.' prefix if needed
+                elif not k.startswith('module.') and f'module.{k}' in al_manager.model.state_dict():
+                    fixed_state_dict[f'module.{k}'] = v
+                else:
+                    fixed_state_dict[k] = v
+            
+            # Attempt to load with fixed keys
+            missing_keys, unexpected_keys = al_manager.model.load_state_dict(fixed_state_dict, strict=False)
+            print(f"Loaded with key fixing. Missing: {len(missing_keys)}, Unexpected: {len(unexpected_keys)}")
+        
+        # Clean up
+        os.unlink(tmp_path)
+        
+        return {
+            "status": "success",
+            "message": "Pre-trained model imported successfully",
+            "project_name": project_name,
+            "model_type": model_type,
+            "num_classes": num_classes
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+@app.post("/verify-model-compatibility")
+async def verify_model_compatibility(uploaded_file: UploadFile = File(...)):
+    """
+    Check if a model file is compatible with the system before fully importing it
+    """
+    try:
+        # Read model file
+        content = await uploaded_file.read()
+        
+        # Create temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        try:
+            # Try to load the model using our safe utility
+            state_dict = safe_load_model(tmp_path)
+            
+            if state_dict is None:
+                # Clean up
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                    
+                return {
+                    "status": "error",
+                    "compatible": False,
+                    "message": "Unable to load model file with any method. The file may be corrupted or in an unsupported format."
+                }
+            
+            # Analyze the model structure
+            model_info = analyze_model_structure(state_dict)
+            print(f"Model info: {model_info}")
+            
+            # Clean up
+            os.unlink(tmp_path)
+            
+            return {
+                "status": "success",
+                "compatible": model_info["compatible"],
+                "model_type": model_info["detected_type"],
+                "num_classes": model_info["num_classes"],
+                "adaptation_needed": model_info["adaptation_needed"],
+                "message": model_info["message"]
+            }
+            
+        except Exception as e:
+            # Clean up temp file
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+                
+            return {
+                "status": "error",
+                "compatible": False,
+                "message": f"Error analyzing model file: {str(e)}"
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+    
+def extract_model_state(state_dict):
+    """
+    Extract model state from various checkpoint formats
+    Handles different model saving formats
+    """
+    if isinstance(state_dict, dict):
+        # Our export format
+        if 'model_state' in state_dict:
+            return state_dict['model_state']
+        # Common PyTorch checkpoint format
+        elif 'state_dict' in state_dict:
+            return state_dict['state_dict']
+        # Direct state dict from weights_only=True loading
+        elif any(k.endswith('.weight') or k.endswith('.bias') for k in state_dict.keys()):
+            return state_dict
+        # Models with 'model' key from HuggingFace or similar
+        elif 'model' in state_dict and isinstance(state_dict['model'], dict):
+            return state_dict['model']
+        # Torchvision model zoo style
+        elif any(k.startswith('layer') or k.startswith('conv') or k.startswith('fc') 
+                or k.startswith('features') or k.startswith('classifier') for k in state_dict.keys()):
+            return state_dict
+    
+    # If the loaded object is a model itself (unlikely but possible)
+    if hasattr(state_dict, 'state_dict') and callable(getattr(state_dict, 'state_dict')):
+        try:
+            return state_dict.state_dict()
+        except:
+            pass
+    
+    # Default: return as-is and hope for the best
+    return state_dict
+
+def analyze_model_structure(state_dict):
+    """
+    Analyze the model structure to determine compatibility and required adaptations
+    Handles various model formats and provides detailed information
+    """
+    result = {
+        "compatible": False,
+        "detected_type": "unknown",
+        "num_classes": None,
+        "adaptation_needed": True,
+        "message": ""
+    }
+    
+    try:
+        # Extract model state
+        model_state = extract_model_state(state_dict)
+        
+        # Check if it's an empty dictionary
+        if not model_state or not isinstance(model_state, dict):
+            result["message"] = "Unable to extract model state dictionary. Invalid format."
+            return result
+            
+        # Print some keys for debugging
+        print(f"Keys in model state: {list(model_state.keys())[:5]}...")
+        
+        # Check model type by examining keys
+        key_set = set([k.split('.')[0] for k in model_state.keys()])
+        
+        # Detect Vision Transformer (ViT) models
+        if any(k in ['cls_token', 'pos_embed', 'patch_embed'] for k in key_set):
+            result["detected_type"] = "vision-transformer"
+        # Detect ResNet models
+        elif any(k.startswith('layer') for k in model_state.keys()):
+            result["detected_type"] = "resnet"
+        # Detect VGG-style models
+        elif 'features' in key_set and 'classifier' in key_set:
+            result["detected_type"] = "vgg-style"
+        # Detect MobileNet models
+        elif 'blocks' in key_set:
+            result["detected_type"] = "mobilenet"
+        # Detect BERT/transformer models
+        elif any(k in ['encoder', 'decoder', 'transformer'] for k in key_set):
+            result["detected_type"] = "transformer-nlp"
+        # Detect detection models
+        elif 'backbone' in key_set:
+            result["detected_type"] = "detection-model"
+        else:
+            result["detected_type"] = "custom"
+        
+        # Try to detect number of classes
+        num_classes = detect_num_classes(model_state)
+        result["num_classes"] = num_classes
+        
+        # Determine compatibility and needs
+        model_compatible = any(k.endswith('.weight') for k in model_state.keys())
+        
+        result["compatible"] = model_compatible
+        result["adaptation_needed"] = True
+        
+        if model_compatible:
+            result["message"] = f"Detected {result['detected_type']} architecture. "
+            if num_classes:
+                result["message"] += f"Found {num_classes} output classes. "
+            result["message"] += "Will attempt adaptation through transfer learning."
+        else:
+            result["message"] = "Model format not recognized. Unable to determine compatibility."
+        
+        return result
+    
+    except Exception as e:
+        result["message"] = f"Error analyzing model: {str(e)}"
+        return result
+
+def detect_num_classes(state_dict):
+    """
+    Try to detect number of classes from model state dict
+    Handles different naming conventions for final layer
+    """
+    # Common patterns for output layer names in different architectures
+    output_patterns = [
+        # CNN models
+        'fc.weight', 'classifier.weight', 'head.weight', 'output.weight',
+        # For ViT and transformer models
+        'head.weight', 'mlp_head.fc2.weight', 'cls_head.weight', 'classifier.weight',
+        # For detection models
+        'roi_heads.box_predictor.cls_score.weight', 'bbox_pred.weight'
+    ]
+    
+    # Look for known output layer patterns
+    for pattern in output_patterns:
+        matching_keys = [k for k in state_dict.keys() if k.endswith(pattern)]
+        if matching_keys:
+            key = matching_keys[0]
+            try:
+                shape = state_dict[key].shape
+                
+                if len(shape) == 2:  # Linear layer weights are 2D [out_features, in_features]
+                    out_features = shape[0]
+                    return out_features
+                elif len(shape) == 1:  # Sometimes weights can be flattened
+                    return shape[0]
+            except:
+                continue
+    
+    # If no exact match, try a more flexible approach for the last layer
+    try:
+        # Find all weight parameters
+        weight_keys = [k for k in state_dict.keys() if k.endswith('.weight')]
+        
+        # Look for likely classifier layers
+        classifier_patterns = ['fc', 'classifier', 'head', 'output', 'linear', 'pred']
+        for pattern in classifier_patterns:
+            candidates = [k for k in weight_keys if pattern in k.lower()]
+            if candidates:
+                # Take the key with the highest index if it has numeric suffixes
+                key = candidates[-1]  # Default to last one
+                shape = state_dict[key].shape
+                
+                if len(shape) == 2:  # Linear layer
+                    return shape[0]
+                elif len(shape) == 1:  # Flattened weights
+                    return shape[0]
+    except Exception as e:
+        print(f"Error in flexible class detection: {e}")
+    
+    # Special handling for ViT models
+    if 'patch_embed.proj.weight' in state_dict:
+        # Try to find other clues in the architecture
+        try:
+            # Check if this is a MAE model (self-supervised pre-training)
+            if 'decoder_pred.weight' in state_dict:
+                shape = state_dict['decoder_pred.weight'].shape
+                return shape[0]
+            
+            # Check for full ViT with a classification head
+            if 'head.weight' in state_dict:
+                shape = state_dict['head.weight'].shape
+                return shape[0]
+        except:
+            pass
+    
+    # If we can't determine, return None
+    return None
+
+@app.post("/upload-csv-paths")
+async def upload_csv_paths(
+    csv_file: UploadFile = File(...),
+    delimiter: str = Form(","),
+    val_split: float = Form(0.2),
+    initial_labeled_ratio: float = Form(0.4)
+):
+    """
+    Process a CSV file with image paths and load the images
+    """
+    try:
+        # Read CSV content
+        content = await csv_file.read()
+        text_content = content.decode('utf-8', errors='replace')  # Handle encoding issues
+        
+        print(f"Using delimiter: '{delimiter}'")
+        
+        # Handle special characters
+        if delimiter == "\\t" or delimiter == "tab":
+            delimiter = "\t"
+        
+        # Parse CSV
+        import csv
+        from io import StringIO
+        
+        # Try to detect if our delimiter guess is wrong
+        first_line = text_content.split('\n')[0]
+        common_delimiters = [',', '\t', ';', '|']
+        
+        # If our delimiter doesn't appear in the first line but others do, we might have guessed wrong
+        if delimiter not in first_line:
+            for alt_delimiter in common_delimiters:
+                if alt_delimiter in first_line:
+                    print(f"Warning: Specified delimiter '{delimiter}' not found in first line. " +
+                          f"Found '{alt_delimiter}' instead. Trying that...")
+                    delimiter = alt_delimiter
+                    break
+        
+        try:
+            csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
+            fieldnames = csv_reader.fieldnames
+            
+            # Check for file_path column
+            if not fieldnames or 'file_path' not in fieldnames:
+                # Try other common column names
+                possible_column_names = ['file_path', 'filepath', 'path', 'filename', 'image', 'imagepath', 'file', 'image_path']
+                
+                found_column = None
+                for column in possible_column_names:
+                    if fieldnames and column in fieldnames:
+                        found_column = column
+                        break
+                
+                if found_column:
+                    print(f"Using '{found_column}' instead of 'file_path'")
+                    file_paths = []
+                    csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
+                    for row in csv_reader:
+                        if row[found_column]:
+                            file_paths.append(row[found_column].strip())
+                else:
+                    # If we can't find a column header, try using the first column
+                    print("No 'file_path' column found. Trying first column...")
+                    
+                    # Reset and parse as simple CSV without headers
+                    csv_reader = csv.reader(StringIO(text_content), delimiter=delimiter)
+                    file_paths = []
+                    for row in csv_reader:
+                        if row and row[0].strip():
+                            file_paths.append(row[0].strip())
+            else:
+                # Standard case - 'file_path' column exists
+                file_paths = []
+                for row in csv_reader:
+                    if row['file_path'] and row['file_path'].strip():
+                        file_paths.append(row['file_path'].strip())
+        except Exception as parse_error:
+            print(f"Error parsing CSV with delimiter '{delimiter}': {parse_error}")
+            
+            # Last resort - try splitting the content by each line and assuming one path per line
+            file_paths = []
+            for line in text_content.split('\n'):
+                line = line.strip()
+                if line and not line.startswith('#') and not line.lower().startswith('file_path'):
+                    file_paths.append(line)
+        
+        if not file_paths:
+            raise HTTPException(status_code=400, detail="No valid file paths found in file")
+        
+        print(f"Found {len(file_paths)} image paths in file. First few: {file_paths[:5]}")
+        
+        # Load images from paths
+        loaded_images = []
+        for path in file_paths:
+            try:
+                # Check if path is absolute or relative
+                if not os.path.isabs(path):
+                    # Try relative to current directory
+                    path = os.path.join(os.getcwd(), path)
+                
+                if not os.path.exists(path):
+                    print(f"Warning: File not found: {path}")
+                    continue
+                
+                # Load image
+                img = Image.open(path).convert('RGB')
+                img_tensor = al_manager.transform(img)
+                
+                # Add to unlabeled data
+                img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
+                al_manager.unlabeled_data[img_id] = img_tensor
+                loaded_images.append(img_id)
+                
+            except Exception as e:
+                print(f"Error loading image from {path}: {str(e)}")
+                continue
+        
+        if not loaded_images:
+            raise HTTPException(status_code=400, detail="Failed to load any valid images from the provided paths")
+        
+        # Process the loaded images similarly to add_initial_data
+        total_images = len(loaded_images)
+        val_size = int(total_images * val_split)
+        initial_labeled_size = int((total_images - val_size) * initial_labeled_ratio)
+        
+        # Shuffle and split
+        np.random.shuffle(loaded_images)
+        val_indices = loaded_images[:val_size]
+        initial_labeled_indices = loaded_images[val_size:val_size + initial_labeled_size]
+        unlabeled_indices = loaded_images[val_size + initial_labeled_size:]
+        
+        # Move images to appropriate sets
+        for idx in val_indices:
+            if idx in al_manager.unlabeled_data:
+                img_tensor = al_manager.unlabeled_data.pop(idx)
+                al_manager.validation_data[idx] = (img_tensor, None)
+            
+        for idx in initial_labeled_indices:
+            if idx in al_manager.unlabeled_data:
+                img_tensor = al_manager.unlabeled_data.pop(idx)
+                al_manager.labeled_data[idx] = (img_tensor, None)  # These will need manual labeling
+        
+        split_info = {
+            "total_images": total_images,
+            "validation": len(val_indices),
+            "initial_labeled": len(initial_labeled_indices),
+            "unlabeled": len(unlabeled_indices)
+        }
+        
+        return {
+            "status": "success",
+            "message": f"Successfully loaded {total_images} images from file",
+            "split_info": split_info
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")
+
+@app.post("/upload-combined-with-labels")
+async def upload_combined_with_labels(
+    files: List[UploadFile],
+    val_split: float = Form(0.2),
+    initial_labeled_ratio: float = Form(0.4),
+    label_column: str = Form("label") # Default label column name
+):
+    """
+    Process a combined upload of a CSV file with both file paths and class labels, plus image files
+    """
+    try:
+        # Separate CSV and image files
+        csv_files = [f for f in files if f.filename.endswith(('.csv', '.tsv', '.txt'))]
+        image_files = [f for f in files if f.content_type and f.content_type.startswith('image/')]
+        
+        if not csv_files:
+            raise HTTPException(status_code=400, detail="No CSV file found in upload")
+        
+        if not image_files:
+            raise HTTPException(status_code=400, detail="No image files found in upload")
+        
+        # Read the CSV file
+        csv_file = csv_files[0]
+        csv_content = await csv_file.read()
+        csv_text = csv_content.decode('utf-8', errors='replace')
+        
+        # Parse CSV to get file paths and labels
+        import csv
+        from io import StringIO
+        
+        # Try to identify the delimiter
+        first_line = csv_text.split('\n')[0]
+        delimiter = ',' # default
+        for potential_delimiter in [',', '\t', ';', '|']:
+            if potential_delimiter in first_line:
+                delimiter = potential_delimiter
+                break
+        
+        # Create a dictionary of image filename to file data
+        image_map = {}
+        for img_file in image_files:
+            # Store by full name and by name without path
+            image_map[img_file.filename] = img_file
+            base_name = os.path.basename(img_file.filename)
+            image_map[base_name] = img_file
+        
+        # First pass: identify the file path and label columns
+        csv_reader = csv.DictReader(StringIO(csv_text), delimiter=delimiter)
+        file_path_column = None
+        label_column_name = label_column  # Start with the provided label column
+        
+        # Common column names for file paths
+        path_column_names = ['file_path', 'filepath', 'path', 'filename', 'image', 'file']
+        # Common column names for labels
+        label_column_names = ['label', 'class', 'category', 'target', 'y', 'classification']
+        
+        # Identify the file path column
+        for field in csv_reader.fieldnames:
+            if field.lower() in path_column_names:
+                file_path_column = field
+                break
+        
+        # If no label column name was provided or found, try to identify it
+        if label_column_name not in csv_reader.fieldnames:
+            for field in csv_reader.fieldnames:
+                if field.lower() in label_column_names:
+                    label_column_name = field
+                    break
+        
+        if not file_path_column:
+            raise HTTPException(status_code=400, detail="Could not find file path column in CSV")
+            
+        if label_column_name not in csv_reader.fieldnames:
+            print(f"Warning: No label column found. Available columns: {csv_reader.fieldnames}")
+            has_labels = False
+        else:
+            has_labels = True
+            print(f"Found label column: {label_column_name}")
+        
+        # Restart the reader
+        csv_reader = csv.DictReader(StringIO(csv_text), delimiter=delimiter)
+        
+        # Process each row and match with images
+        labeled_images = []  # Images with labels from CSV
+        unlabeled_images = []  # Images without labels
+        label_to_index = {}  # Map string labels to numeric indices
+        
+        for row in csv_reader:
+            path = row.get(file_path_column, "").strip()
+            if not path:
+                continue
+                
+            # Extract the filename from the path
+            filename = os.path.basename(path)
+            
+            # Look up the image in our map
+            if filename in image_map:
+                img_file = image_map[filename]
+                content = await img_file.read()  # Read the content of the file
+                
+                try:
+                    # Convert to PIL Image and then to tensor
+                    img = Image.open(io.BytesIO(content)).convert('RGB')
+                    img_tensor = al_manager.transform(img)
+                    
+                    # Generate a unique image ID
+                    img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
+                    
+                    # Check if this image has a label
+                    if has_labels:
+                        label_str = row.get(label_column_name, "").strip()
+                        if label_str:
+                            # Convert string label to numeric index if we haven't seen it before
+                            if label_str not in label_to_index:
+                                label_to_index[label_str] = len(label_to_index)
+                            
+                            label_idx = label_to_index[label_str]
+                            # Add to labeled data
+                            al_manager.labeled_data[img_id] = (img_tensor, label_idx)
+                            labeled_images.append(img_id)
+                            continue
+                    
+                    # If we get here, the image is unlabeled
+                    al_manager.unlabeled_data[img_id] = img_tensor
+                    unlabeled_images.append(img_id)
+                    
+                except Exception as e:
+                    print(f"Error processing image {filename}: {str(e)}")
+                    continue
+        
+        if not (labeled_images or unlabeled_images):
+            raise HTTPException(status_code=400, detail="Failed to process any images from the upload")
+        
+        print(f"Processed {len(labeled_images)} labeled images and {len(unlabeled_images)} unlabeled images")
+        print(f"Label mapping: {label_to_index}")
+        
+        # Take some unlabeled images for validation
+        val_size = int(len(unlabeled_images) * val_split)
+        val_indices = unlabeled_images[:val_size]
+        remaining_unlabeled = unlabeled_images[val_size:]
+        
+        # Move validation images to validation set
+        for idx in val_indices:
+            if idx in al_manager.unlabeled_data:
+                img_tensor = al_manager.unlabeled_data.pop(idx)
+                al_manager.validation_data[idx] = (img_tensor, None)
+        
+        # Return the label mapping for future reference
+        return {
+            "status": "success",
+            "message": f"Successfully processed images with labels from CSV",
+            "stats": {
+                "labeled": len(labeled_images),
+                "unlabeled": len(remaining_unlabeled),
+                "validation": len(val_indices),
+                "total": len(labeled_images) + len(remaining_unlabeled) + len(val_indices)
+            },
+            "label_mapping": label_to_index
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process CSV with labels: {str(e)}")
+
+@app.post("/debug-csv-file")
+async def debug_csv_file(csv_file: UploadFile = File(...)):
+    """
+    Debug CSV file to examine the paths and content
+    """
+    try:
+        # Read CSV content
+        content = await csv_file.read()
+        text_content = content.decode('utf-8', errors='replace')
+        
+        # Parse CSV
+        import csv
+        from io import StringIO
+        
+        # Try comma as default delimiter
+        delimiter = ','
+        if '\t' in text_content[:1000]:  # Check first 1000 chars for tabs
+            delimiter = '\t'
+        
+        csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
+        
+        # Get sample rows and column names
+        sample_rows = []
+        for i, row in enumerate(csv_reader):
+            if i < 5:  # Get first 5 rows
+                sample_rows.append(dict(row))
+            else:
+                break
+                
+        # Check if there's a file_path and annotation column
+        columns = csv_reader.fieldnames if csv_reader.fieldnames else []
+        
+        # Add current directory info
+        cwd = os.getcwd()
+        search_dirs = [
+            cwd,
+            os.path.join(cwd, 'data'),
+            os.path.join(cwd, 'images'),
+            os.path.join(cwd, 'uploads')
+        ]
+        
+        return {
+            "columns": columns,
+            "sample_rows": sample_rows,
+            "delimiter_used": delimiter,
+            "current_directory": cwd,
+            "search_directories": search_dirs
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CSV debug failed: {str(e)}")
+
+# Now let's update the upload_csv_paths_with_labels function to handle more path variations
+@app.post("/upload-csv-paths-with-labels")
+async def upload_csv_paths_with_labels(
+    csv_file: UploadFile = File(...),
+    label_column: str = Form("annotation"),  # Default to "annotation"
+    delimiter: str = Form(","),
+    val_split: float = Form(0.2),
+    initial_labeled_ratio: float = Form(0.4)
+):
+    """
+    Process a CSV file with both image paths and labels with enhanced path handling
+    """
+    try:
+        # Read CSV content
+        content = await csv_file.read()
+        text_content = content.decode('utf-8', errors='replace')
+        
+        print(f"Using delimiter: '{delimiter}' and label column: '{label_column}'")
+        
+        # Handle special characters for delimiter
+        if delimiter == "\\t" or delimiter == "tab":
+            delimiter = "\t"
+        
+        # Parse CSV
+        import csv
+        from io import StringIO
+        
+        # First try using the specified delimiter
+        csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
+        
+        # Check if we have fieldnames
+        if not csv_reader.fieldnames:
+            raise HTTPException(status_code=400, detail="CSV file has no headers")
+            
+        fieldnames = csv_reader.fieldnames
+        file_path_column = None
+        
+        # Common column names for file paths
+        path_column_names = ['file_path', 'filepath', 'path', 'filename', 'image', 'file']
+        
+        # Try to find file path column
+        for field in fieldnames:
+            if field.lower() in path_column_names:
+                file_path_column = field
+                break
+        
+        # If we couldn't find it, default to first column
+        if not file_path_column and len(fieldnames) > 0:
+            file_path_column = fieldnames[0]
+            print(f"Could not find standard file path column, using first column: '{file_path_column}'")
+        
+        # Check if label column exists
+        if label_column not in fieldnames:
+            # Try common label column names
+            label_column_names = ['annotation', 'label', 'class', 'category', 'target', 'classification']
+            for field in fieldnames:
+                if field.lower() in label_column_names:
+                    label_column = field
+                    print(f"Using '{label_column}' as label column instead")
+                    break
+            
+            # If still not found and we have at least 2 columns, use the second one
+            if label_column not in fieldnames and len(fieldnames) > 1:
+                label_column = fieldnames[1]
+                print(f"Using second column '{label_column}' as label column")
+        
+        if not file_path_column:
+            raise HTTPException(status_code=400, detail=f"Could not identify file path column in CSV. Columns found: {fieldnames}")
+        
+        # Restart reader
+        csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
+        
+        # Process rows and extract file paths and labels
+        labeled_images = []  # For tracking which images have labels
+        unlabeled_images = []  # For tracking which images don't have labels
+        label_to_index = {}  # For mapping string labels to numeric indices
+        failed_paths = []  # Track paths that couldn't be found
+        
+        # Define additional search directories
+        cwd = os.getcwd()
+        common_dirs = [
+            cwd,
+            os.path.join(cwd, 'data'),
+            os.path.join(cwd, 'images'),
+            os.path.join(cwd, 'uploads'),
+            os.path.join(cwd, 'static'),
+            os.path.join(cwd, 'assets'),
+            os.path.expanduser('~/Downloads'),
+            '/tmp'  # For server environments
+        ]
+        
+        # Print current directory for debugging
+        print(f"Current working directory: {cwd}")
+        print(f"Search directories: {common_dirs}")
+        
+        # Process each row in the CSV
+        for row_index, row in enumerate(csv_reader):
+            # Skip empty rows
+            if not row or all(not val for val in row.values()):
+                continue
+                
+            # Get the file path
+            file_path = row.get(file_path_column, "").strip()
+            if not file_path:
+                continue
+                
+            print(f"Processing path: {file_path}")
+                
+            # Get the label (if it exists)
+            label_str = None
+            if label_column in row:
+                label_str = row.get(label_column, "").strip()
+                print(f"Found label: {label_str}")
+            
+            # Try different approaches to find the file
+            file_found = False
+            img_tensor = None
+            
+            # Try path variations
+            paths_to_try = []
+            
+            # 1. Try exact path
+            paths_to_try.append(file_path)
+            
+            # 2. Try joining with search directories
+            filename = os.path.basename(file_path)
+            for directory in common_dirs:
+                paths_to_try.append(os.path.join(directory, filename))
+                
+                # Also try with parent directory structure (up to 2 levels)
+                parent_dir = os.path.basename(os.path.dirname(file_path))
+                if parent_dir:
+                    paths_to_try.append(os.path.join(directory, parent_dir, filename))
+                    
+                    # Try one more level up
+                    grandparent_dir = os.path.basename(os.path.dirname(os.path.dirname(file_path)))
+                    if grandparent_dir:
+                        paths_to_try.append(os.path.join(directory, grandparent_dir, parent_dir, filename))
+            
+            # 3. Try adding common image extensions if no extension
+            if not os.path.splitext(filename)[1]:
+                for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']:
+                    paths_to_try.append(file_path + ext)
+                    for directory in common_dirs:
+                        paths_to_try.append(os.path.join(directory, filename + ext))
+            
+            # Remove duplicates
+            paths_to_try = list(set(paths_to_try))
+            
+            # Try all paths
+            for test_path in paths_to_try:
+                if os.path.exists(test_path):
+                    try:
+                        print(f"Found file at: {test_path}")
+                        img = Image.open(test_path).convert('RGB')
+                        img_tensor = al_manager.transform(img)
+                        file_found = True
+                        break
+                    except Exception as e:
+                        print(f"Error loading image {test_path}: {str(e)}")
+                        continue
+            
+            if not file_found:
+                print(f"Failed to find image for path: {file_path}")
+                failed_paths.append((file_path, f"File not found. Tried {len(paths_to_try)} variations."))
+                continue
+                
+            if img_tensor is None:
+                continue
+                
+            # Generate a unique image ID
+            img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
+            
+            # Process based on whether we have a label
+            if label_str:
+                # Convert string label to numeric index if we haven't seen it before
+                if label_str not in label_to_index:
+                    label_to_index[label_str] = len(label_to_index)
+                
+                label_idx = label_to_index[label_str]
+                # Add to labeled data
+                al_manager.labeled_data[img_id] = (img_tensor, label_idx)
+                labeled_images.append(img_id)
+                print(f"Added image {img_id} to labeled data with label {label_str} (index {label_idx})")
+            else:
+                # No label, add to unlabeled data
+                al_manager.unlabeled_data[img_id] = img_tensor
+                unlabeled_images.append(img_id)
+                print(f"Added image {img_id} to unlabeled data")
+        
+        # Check if we processed any images
+        if not (labeled_images or unlabeled_images):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Could not find or process any images from the CSV. Tried {len(failed_paths)} paths."
+            )
+        
+        # Take some unlabeled images for validation
+        val_size = int(len(unlabeled_images) * val_split)
+        val_indices = unlabeled_images[:val_size] if val_size > 0 else []
+        remaining_unlabeled = unlabeled_images[val_size:] if val_size > 0 else unlabeled_images
+        
+        # Move validation images to validation set
+        for idx in val_indices:
+            if idx in al_manager.unlabeled_data:
+                img_tensor = al_manager.unlabeled_data.pop(idx)
+                al_manager.validation_data[idx] = (img_tensor, None)
+                
+        # Print summary
+        print(f"Successfully processed {len(labeled_images)} labeled images and {len(remaining_unlabeled)} unlabeled images")
+        print(f"Failed to process {len(failed_paths)} image paths")
+        print(f"Label mapping: {label_to_index}")
+        
+        # Return the results including label mapping
+        return {
+            "status": "success",
+            "message": f"Successfully processed images with labels from CSV",
+            "stats": {
+                "labeled": len(labeled_images),
+                "unlabeled": len(remaining_unlabeled),
+                "validation": len(val_indices),
+                "total": len(labeled_images) + len(remaining_unlabeled) + len(val_indices),
+                "failed": len(failed_paths)
+            },
+            "label_mapping": label_to_index,  # This is the important part
+            "failed_paths": failed_paths[:10]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process CSV with labels: {str(e)}")
+
+@app.post("/recover-batch")
+async def recover_batch(request: BatchRequest):
+    """Emergency batch recovery with simple random sampling"""
+    try:
+        print("\n=== EMERGENCY BATCH RECOVERY ===")
+        print(f"Using strategy: {request.strategy}, batch size: {request.batch_size}")
+        
+        # Make sure we have unlabeled data
+        if len(al_manager.unlabeled_data) == 0:
+            raise HTTPException(status_code=400, detail="No unlabeled data available")
+            
+        # Use a limited batch size for safety
+        batch_size = min(request.batch_size, len(al_manager.unlabeled_data))
+        
+        # Simple random sampling directly
+        image_ids = list(al_manager.unlabeled_data.keys())
+        selected_ids = random.sample(image_ids, batch_size)
+        
+        selected_samples = []
+        for img_id in selected_ids:
+            selected_samples.append({
+                "image_id": img_id,
+                "uncertainty": 0.5,  # Default uncertainty
+                "predictions": [{"label": "Unknown", "confidence": 0.0}]
+            })
+        
+        al_manager.current_batch = [x["image_id"] for x in selected_samples]
+        
+        print(f"Successfully recovered batch with {len(selected_samples)} images")
+        return selected_samples
+        
+    except Exception as e:
+        print(f"Error in recover_batch: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 async def main():

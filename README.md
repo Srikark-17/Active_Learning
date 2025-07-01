@@ -19,15 +19,28 @@ This is a React app that can be used to conduct Active Learning locally for imag
 2. Switch directory into the `frontend` and run
    `yarn run dev`
 3. The website should open up on `localhost:3000`. Now, go to the left-hand column and input the project information. **LABELS ARE AUTOMATICALLY ADDED BY TYPING IN THE TEXT BOX. ONLY CLICK "ADD LABEL" IF YOU NEED TO ENTER A NEW LABEL.**
-4. Upload the images/image directory
+4. Upload the folder directory, individual images, CSVs with images and with or without annotations
 5. Click "Start Project"
-6. Click "Start Training", which is right below the "Start Project" button
-7. Now, for each image, select the appropriate label.
-8. Click "Submit Lable" after selecting the appropriate label.
-9. Repeat steps 7-8 for all images
-10. While annotating, it's important to note that there are model predictions below the labels to view the model's performance at predicting the image's label
-11. Once the batch is complete, the script will automatically retrieve the progress of the current episode as well as the new batch to review.
-12. At the bottom of the left column will be checkpoint controls as well as import/export models. You can save checkpoints and/or export the model after each batch or before reviewing a batch.
+6. Now, for each image, select the appropriate label.
+7. Click "Submit Label" after selecting the appropriate label.
+8. Repeat steps 6-7 for all images
+9. While annotating, it's important to note that there are model predictions below the labels to view the model's performance at predicting the image's label
+10. Once the batch is complete, the script will automatically retrieve the progress of the current episode as well as the new batch to review.
+11. At the bottom of the left column will be checkpoint controls as well as exporting models. You can save checkpoints and/or export the model after each batch or before reviewing a batch.
+
+### For pre-trained models
+
+1. Fill out the project name
+2. Select the model type. If the model type isn't specified, select "Custom".
+3. Include the number of classes (classifications)
+4. Upload the model file
+5. Click "Import model"
+6. Now, for each image, select the appropriate label.
+7. Click "Submit Label" after selecting the appropriate label.
+8. Repeat steps 6-7 for all images
+9. While annotating, it's important to note that there are model predictions below the labels to view the model's performance at predicting the image's label
+10. Once the batch is complete, the script will automatically retrieve the progress of the current episode as well as the new batch to review.
+11. At the bottom of the left column will be checkpoint controls as well as exporting models. You can save checkpoints and/or export the model after each batch or before reviewing a batch.
 
 ## Sampling Strategies
 
