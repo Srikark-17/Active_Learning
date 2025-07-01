@@ -18,7 +18,8 @@ This is a React app that can be used to conduct Active Learning locally for imag
    `python main.py`
 2. Switch directory into the `frontend` and run
    `yarn run dev`
-3. The website should open up on `localhost:3000`. Now, go to the left-hand column and input the project information. **LABELS ARE AUTOMATICALLY ADDED BY TYPING IN THE TEXT BOX. ONLY CLICK "ADD LABEL" IF YOU NEED TO ENTER A NEW LABEL.**
+3. The website should open up on `localhost:3000`. Now, go to the left-hand column and input the project information.
+   **LABELS ARE AUTOMATICALLY ADDED BY TYPING IN THE TEXT BOX. ONLY CLICK "ADD LABEL" IF YOU NEED TO ENTER A NEW LABEL.**
 4. Upload the folder directory, individual images, CSVs with images and with or without annotations
 5. Click "Start Project"
 6. Now, for each image, select the appropriate label.
