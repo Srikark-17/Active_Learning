@@ -32,7 +32,7 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
     );
 
     if (files.length > 0) {
-      onImagesLoaded(files);
+      onImagesLoaded(files); // JUST PASS FILES, NOT CSV LOGIC
     } else {
       onError("No valid image files selected");
     }
@@ -44,7 +44,7 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
     );
 
     if (files.length > 0) {
-      onImagesLoaded(files);
+      onImagesLoaded(files); // JUST PASS FILES, NOT CSV LOGIC
     } else {
       onError("No valid image files in selected folder");
     }

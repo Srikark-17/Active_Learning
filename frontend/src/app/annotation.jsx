@@ -101,6 +101,7 @@ const ActiveLearningUI = () => {
     min_lr: 1e-6,
   });
   const [lrHistory, setLrHistory] = useState();
+  const fileDataRef = useRef(null);
 
   useEffect(() => {
     let interval;
@@ -329,20 +330,21 @@ const ActiveLearningUI = () => {
     detectedLabels = []
   ) => {
     try {
-      // Store the loaded files first, before any API calls
-      setLoadedImages(files);
-      setImageLoadError(null);
+      console.log("handleImagesLoaded called with:", {
+        filesCount: files.length,
+        uploadType,
+        extraParam,
+        detectedLabels,
+        firstFile: files[0], // Log the actual file object
+      });
 
       // Auto-populate labels if we have detected labels
       if (detectedLabels && detectedLabels.length > 0) {
         console.log("Auto-populating labels from CSV:", detectedLabels);
-
-        // Create new labels based on detected ones
         const newLabels = detectedLabels
           .map((label) => label.trim())
           .filter((label) => label);
 
-        // Update labels state
         if (newLabels.length > 0) {
           setLabels(newLabels);
         }
@@ -351,27 +353,68 @@ const ActiveLearningUI = () => {
       // Handle CSV-only upload with labels
       if (uploadType === "csv-with-labels") {
         const labelColumn = extraParam;
-        console.log(
-          `Processing CSV-only upload with label column: ${labelColumn}`
-        );
-        setImageLoadError(
-          `Processing CSV file with labels (using column: ${labelColumn})...`
-        );
+        const csvFile = files[0];
 
-        // Store info for when Start Project is clicked
+        if (!csvFile || !(csvFile instanceof File)) {
+          throw new Error("Invalid CSV file object received");
+        }
+
+        // Store the file reference directly in ref
+        fileDataRef.current = {
+          type: "csv-with-labels",
+          csvFile: csvFile,
+          labelColumn: labelColumn,
+          delimiter: ",",
+          detectedLabels: detectedLabels,
+        };
+
+        // Store indicator in state (NOT the actual file)
         setLoadedImages({
           type: "csv-with-labels",
-          files: files,
+          fileCount: 1,
           labelColumn: labelColumn,
+          delimiter: ",",
           detectedLabels: detectedLabels,
         });
 
-        setImageLoadError(`CSV with labels processed. Please click "Start Project" to begin. 
-          Note: The system will try to find the image files at the paths in your CSV.`);
+        setImageLoadError(
+          "CSV with labels processed. Click 'Start Project' to begin."
+        );
         return;
       }
 
-      // Rest of the function remains unchanged...
+      // Store the loaded files first, before any API calls
+      setLoadedImages(files);
+      setImageLoadError(null);
+
+      if (detectedLabels && detectedLabels.length > 0) {
+        console.log("Auto-populating labels from CSV:", detectedLabels);
+        const newLabels = detectedLabels
+          .map((label) => label.trim())
+          .filter((label) => label);
+
+        if (newLabels.length > 0) {
+          setLabels(newLabels);
+        }
+      }
+
+      // Handle other upload types...
+      if (uploadType === "combined-with-labels") {
+        // Store files in ref for combined uploads too
+        fileDataRef.current = {
+          type: "combined-with-labels",
+          files: files,
+          labelColumn: extraParam,
+          detectedLabels: detectedLabels,
+        };
+
+        setLoadedImages({
+          type: "combined-with-labels",
+          fileCount: files.length,
+          labelColumn: extraParam,
+          detectedLabels: detectedLabels,
+        });
+      }
     } catch (error) {
       console.error("Upload error:", error);
       setImageLoadError("Failed to upload: " + error.message);
@@ -517,6 +560,16 @@ const ActiveLearningUI = () => {
       return;
     }
 
+    const hasFiles =
+      (Array.isArray(loadedImages) && loadedImages.length > 0) ||
+      (loadedImages.type && loadedImages.fileCount > 0) ||
+      fileDataRef.current;
+
+    if (!hasFiles) {
+      setImageLoadError("Please upload images or a CSV file with image paths");
+      return;
+    }
+
     try {
       setIsLoading(true);
       setImageLoadError(null);
@@ -537,88 +590,54 @@ const ActiveLearningUI = () => {
       console.log("Project initialized:", initResult);
       setIsInitialized(true);
 
-      // Check if we have a special CSV upload with annotations
-      setImageLoadError(
-        `Processing CSV with annotations (using column: ${loadedImages.labelColumn})...`
-      );
-
-      const result = await activeLearnAPI.uploadCSVPathsWithLabels(
-        loadedImages.files,
-        loadedImages.labelColumn,
-        loadedImages.delimiter || ",",
-        valSplit,
-        initialLabeledRatio
-      );
-
-      console.log("CSV with annotations processed:", result);
-
-      // Update labels from label mapping
-      if (result.label_mapping) {
-        // Get existing labels
-        const existingLabels = [...labels];
-
-        // Create a map of label text to label index
-        const newLabels = [...existingLabels];
-
-        // Add labels from mapping
-        Object.keys(result.label_mapping).forEach((labelText) => {
-          const labelIndex = result.label_mapping[labelText];
-
-          // Ensure we have enough space in the array
-          while (newLabels.length <= labelIndex) {
-            newLabels.push("");
-          }
-
-          // Only update empty labels or add new ones
-          if (!newLabels[labelIndex] || newLabels[labelIndex] === "") {
-            newLabels[labelIndex] = labelText;
-          }
-        });
-
-        // Remove any remaining empty labels
-        const finalLabels = newLabels.filter((label) => label);
-
-        if (finalLabels.length > 0) {
-          setLabels(finalLabels);
-          console.log("Updated labels from CSV:", finalLabels);
-        }
-      }
-
-      // Handle CSV-only upload with labels (detection from existing code)
-      else if (loadedImages.type === "csv-with-labels") {
+      if (fileDataRef.current?.type === "csv-with-labels") {
         setImageLoadError(
-          `Processing CSV with labels (${loadedImages.labelColumn})...`
+          `Processing CSV with annotations (using column: ${fileDataRef.current.labelColumn})...`
         );
 
+        // Get the actual File object from the ref
+        const csvFile = fileDataRef.current.csvFile;
+
+        console.log("Using CSV file from ref:", {
+          name: csvFile?.name,
+          type: csvFile?.type,
+          size: csvFile?.size,
+          isFile: csvFile instanceof File,
+        });
+
+        if (!csvFile || !(csvFile instanceof File)) {
+          throw new Error("CSV file object is not valid");
+        }
+
         const result = await activeLearnAPI.uploadCSVPathsWithLabels(
-          loadedImages.file,
-          loadedImages.labelColumn,
-          loadedImages.delimiter || ",",
+          csvFile, // This should now be the actual File object
+          fileDataRef.current.labelColumn,
+          fileDataRef.current.delimiter || ",",
           valSplit,
           initialLabeledRatio
         );
 
-        console.log("CSV with labels processed:", result);
+        console.log("CSV with annotations processed:", result);
 
         // Update labels from label mapping
         if (result.label_mapping) {
-          const newLabels = [...labels];
+          const existingLabels = [...labels];
+          const newLabels = [...existingLabels];
+
           Object.keys(result.label_mapping).forEach((labelText) => {
             const labelIndex = result.label_mapping[labelText];
-            if (
-              typeof newLabels[labelIndex] === "undefined" ||
-              newLabels[labelIndex] === ""
-            ) {
-              // Fill any gaps with empty labels
-              while (newLabels.length <= labelIndex) {
-                newLabels.push("");
-              }
+            while (newLabels.length <= labelIndex) {
+              newLabels.push("");
+            }
+            if (!newLabels[labelIndex] || newLabels[labelIndex] === "") {
               newLabels[labelIndex] = labelText;
             }
           });
 
-          if (newLabels.length > 0) {
-            setLabels(newLabels);
+          const finalLabels = newLabels.filter((label) => label);
+          if (finalLabels.length > 0) {
+            setLabels(finalLabels);
+            console.log("Updated labels from CSV:", finalLabels);
           }
         }
 
@@ -629,19 +648,15 @@ const ActiveLearningUI = () => {
         // Start training if we have enough labeled data
         if (result.stats.labeled > 0) {
           setImageLoadError("Starting initial training with annotated data...");
-
           try {
             const episodeResult = await activeLearnAPI.startEpisode(
               epochs,
               batchSize
             );
-
             console.log("Initial training result:", episodeResult);
-
             if (episodeResult.final_val_acc) {
               setValidationAccuracy(episodeResult.final_val_acc);
             }
-
             setImageLoadError(
               "Initial training complete - Starting active learning"
             );
@@ -660,8 +675,8 @@ const ActiveLearningUI = () => {
           `Processing CSV with labels (${loadedImages.labelColumn}) and images together...`
         );
         const result = await activeLearnAPI.uploadCombinedWithLabels(
-          loadedImages.files,
-          loadedImages.labelColumn,
+          fileDataRef.current.files,
+          fileDataRef.current.labelColumn,
           valSplit,
           initialLabeledRatio
         );
@@ -768,7 +783,18 @@ const ActiveLearningUI = () => {
           setIsLoading(false);
           return;
         }
+      } else if (Array.isArray(loadedImages) && loadedImages.length > 0) {
+        setImageLoadError("Setting up initial dataset...");
+        const result = await activeLearnAPI.uploadData(
+          loadedImages,
+          valSplit,
+          initialLabeledRatio
+        );
+        console.log("Data split result:", result);
+        await getNextBatch();
+        setImageLoadError(null);
       }
+
       // Handle regular image upload
       else {
         setImageLoadError("Setting up initial dataset...");
