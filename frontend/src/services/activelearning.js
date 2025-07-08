@@ -542,37 +542,81 @@ const activeLearnAPI = {
   // Add this method to activeLearnAPI.js
 
   // In activelearning.js - Enhanced version of uploadCSVPathsWithLabels
+  // Updated uploadCSVPathsWithLabels method in activeLearnAPI
   async uploadCSVPathsWithLabels(
     csvFile,
-    labelColumn = "annotation", // Update default to match your CSV
+    labelColumn = "annotation",
     delimiter = ",",
-    valSplit,
-    initialLabeledRatio
+    valSplit = 0.2,
+    initialLabeledRatio = 0.4
   ) {
+    try {
+      console.log("Uploading CSV with labels:", {
+        filename: csvFile.name,
+        labelColumn,
+        delimiter,
+        valSplit,
+        initialLabeledRatio,
+      });
+
+      const formData = new FormData();
+
+      // Make sure the parameter name matches the FastAPI endpoint exactly
+      formData.append("csv_file", csvFile);
+      formData.append("label_column", labelColumn);
+      formData.append("delimiter", delimiter);
+      formData.append("val_split", valSplit.toString());
+      formData.append("initial_labeled_ratio", initialLabeledRatio.toString());
+
+      // Don't set Content-Type header - let the browser set it with boundary
+      const response = await fetch(`${API_URL}/upload-csv-paths-with-labels`, {
+        method: "POST",
+        body: formData,
+      });
+
+      console.log("Response status:", response.status);
+      console.log(
+        "Response headers:",
+        Object.fromEntries(response.headers.entries())
+      );
+
+      if (!response.ok) {
+        let errorMessage;
+        try {
+          const error = await response.json();
+          errorMessage =
+            error.detail ||
+            error.message ||
+            `HTTP ${response.status}: ${response.statusText}`;
+          console.error("Server error response:", error);
+        } catch (parseError) {
+          console.error("Failed to parse error response:", parseError);
+          errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+        }
+        throw new Error(errorMessage);
+      }
+
+      const result = await response.json();
+      console.log("Upload successful:", result);
+      return result;
+    } catch (error) {
+      console.error("uploadCSVPathsWithLabels error:", error);
+      throw error;
+    }
+  },
+
+  // Also add this debug method to help troubleshoot
+  async debugCSVFile(csvFile) {
     const formData = new FormData();
-
     formData.append("csv_file", csvFile);
-    formData.append("label_column", labelColumn);
-    formData.append("delimiter", delimiter);
 
-    if (valSplit !== undefined) {
-      formData.append("val_split", valSplit);
-    }
-    if (initialLabeledRatio !== undefined) {
-      formData.append("initial_labeled_ratio", initialLabeledRatio);
-    }
-
-    const response = await fetch(`${API_URL}/upload-csv-paths-with-labels`, {
+    const response = await fetch(`${API_URL}/debug-csv-file`, {
       method: "POST",
       body: formData,
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(
-        error.detail ||
-          `Failed to upload CSV with labels: ${response.statusText}`
-      );
+      throw new Error(`Failed to debug CSV file: ${response.statusText}`);
     }
 
     return await response.json();

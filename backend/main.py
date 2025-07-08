@@ -3244,238 +3244,246 @@ async def debug_csv_file(csv_file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CSV debug failed: {str(e)}")
 
-# Now let's update the upload_csv_paths_with_labels function to handle more path variations
 @app.post("/upload-csv-paths-with-labels")
 async def upload_csv_paths_with_labels(
-    csv_file: UploadFile = File(...),
-    label_column: str = Form("annotation"),  # Default to "annotation"
-    delimiter: str = Form(","),
-    val_split: float = Form(0.2),
-    initial_labeled_ratio: float = Form(0.4)
+    csv_file: UploadFile = File(..., description="CSV file with image paths and labels"),
+    label_column: str = Form(default="annotation", description="Name of the label column"),
+    delimiter: str = Form(default=",", description="CSV delimiter"),
+    val_split: float = Form(default=0.2, ge=0.0, le=1.0, description="Validation split ratio"),
+    initial_labeled_ratio: float = Form(default=0.4, ge=0.0, le=1.0, description="Initial labeled ratio")
 ):
     """
     Process a CSV file with both image paths and labels with enhanced path handling
     """
     try:
+        # Validate inputs
+        print(f"Received request:")
+        print(f"  File: {csv_file.filename}")
+        print(f"  Content type: {csv_file.content_type}")
+        print(f"  Label column: {label_column}")
+        print(f"  Delimiter: {delimiter}")
+        print(f"  Val split: {val_split}")
+        print(f"  Initial labeled ratio: {initial_labeled_ratio}")
+        
+        # Validate file
+        if not csv_file or not csv_file.filename:
+            raise HTTPException(status_code=400, detail="No CSV file provided")
+            
+        if not csv_file.filename.lower().endswith(('.csv', '.tsv', '.txt')):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid file type. Expected CSV, TSV, or TXT, got: {csv_file.filename}"
+            )
+        
+        # Validate parameters
+        if not (0.0 <= val_split <= 1.0):
+            raise HTTPException(status_code=400, detail="val_split must be between 0.0 and 1.0")
+            
+        if not (0.0 <= initial_labeled_ratio <= 1.0):
+            raise HTTPException(status_code=400, detail="initial_labeled_ratio must be between 0.0 and 1.0")
+        
         # Read CSV content
-        content = await csv_file.read()
-        text_content = content.decode('utf-8', errors='replace')
+        try:
+            content = await csv_file.read()
+            if not content:
+                raise HTTPException(status_code=400, detail="Uploaded file is empty")
+                
+            text_content = content.decode('utf-8', errors='replace')
+            print(f"Successfully read {len(text_content)} characters from CSV")
+            
+        except Exception as read_error:
+            print(f"Error reading CSV file: {str(read_error)}")
+            raise HTTPException(status_code=400, detail=f"Error reading CSV file: {str(read_error)}")
         
-        print(f"Using delimiter: '{delimiter}' and label column: '{label_column}'")
-        
-        # Handle special characters for delimiter
-        if delimiter == "\\t" or delimiter == "tab":
+        # Handle special delimiter characters
+        if delimiter == "\\t" or delimiter.lower() == "tab":
             delimiter = "\t"
         
         # Parse CSV
         import csv
         from io import StringIO
         
-        # First try using the specified delimiter
-        csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
-        
-        # Check if we have fieldnames
-        if not csv_reader.fieldnames:
-            raise HTTPException(status_code=400, detail="CSV file has no headers")
+        try:
+            csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
+            fieldnames = csv_reader.fieldnames
             
-        fieldnames = csv_reader.fieldnames
-        file_path_column = None
+            if not fieldnames:
+                raise HTTPException(status_code=400, detail="CSV file has no headers")
+                
+            print(f"Found CSV columns: {fieldnames}")
+                
+        except Exception as csv_error:
+            print(f"Error parsing CSV: {str(csv_error)}")
+            raise HTTPException(status_code=400, detail=f"Error parsing CSV with delimiter '{delimiter}': {str(csv_error)}")
         
-        # Common column names for file paths
+        # Find file path column
+        file_path_column = None
         path_column_names = ['file_path', 'filepath', 'path', 'filename', 'image', 'file']
         
-        # Try to find file path column
         for field in fieldnames:
             if field.lower() in path_column_names:
                 file_path_column = field
                 break
         
-        # If we couldn't find it, default to first column
         if not file_path_column and len(fieldnames) > 0:
             file_path_column = fieldnames[0]
-            print(f"Could not find standard file path column, using first column: '{file_path_column}'")
-        
-        # Check if label column exists
-        if label_column not in fieldnames:
-            # Try common label column names
-            label_column_names = ['annotation', 'label', 'class', 'category', 'target', 'classification']
-            for field in fieldnames:
-                if field.lower() in label_column_names:
-                    label_column = field
-                    print(f"Using '{label_column}' as label column instead")
-                    break
-            
-            # If still not found and we have at least 2 columns, use the second one
-            if label_column not in fieldnames and len(fieldnames) > 1:
-                label_column = fieldnames[1]
-                print(f"Using second column '{label_column}' as label column")
+            print(f"Using first column as file path: '{file_path_column}'")
         
         if not file_path_column:
-            raise HTTPException(status_code=400, detail=f"Could not identify file path column in CSV. Columns found: {fieldnames}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Could not identify file path column. Available columns: {fieldnames}"
+            )
         
-        # Restart reader
+        # Find label column
+        if label_column not in fieldnames:
+            # Try common label column names
+            label_alternatives = ['annotation', 'label', 'class', 'category', 'target', 'classification']
+            found_alternative = None
+            
+            for field in fieldnames:
+                if field.lower() in label_alternatives:
+                    found_alternative = field
+                    break
+            
+            if found_alternative:
+                print(f"Using '{found_alternative}' instead of '{label_column}' for labels")
+                label_column = found_alternative
+            elif len(fieldnames) > 1:
+                label_column = fieldnames[1]
+                print(f"Using second column '{label_column}' as label column")
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Label column '{label_column}' not found. Available columns: {fieldnames}"
+                )
+        
+        print(f"Using file path column: '{file_path_column}'")
+        print(f"Using label column: '{label_column}'")
+        
+        # Process the CSV data
         csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
         
-        # Process rows and extract file paths and labels
-        labeled_images = []  # For tracking which images have labels
-        unlabeled_images = []  # For tracking which images don't have labels
-        label_to_index = {}  # For mapping string labels to numeric indices
-        failed_paths = []  # Track paths that couldn't be found
+        labeled_images = []
+        unlabeled_images = []
+        label_to_index = {}
+        failed_paths = []
         
-        # Define additional search directories
+        # Define search directories
+        import os
         cwd = os.getcwd()
-        common_dirs = [
+        search_dirs = [
             cwd,
             os.path.join(cwd, 'data'),
             os.path.join(cwd, 'images'),
             os.path.join(cwd, 'uploads'),
             os.path.join(cwd, 'static'),
-            os.path.join(cwd, 'assets'),
-            os.path.expanduser('~/Downloads'),
-            '/tmp'  # For server environments
         ]
         
-        # Print current directory for debugging
-        print(f"Current working directory: {cwd}")
-        print(f"Search directories: {common_dirs}")
+        print(f"Searching for images in: {search_dirs}")
         
-        # Process each row in the CSV
+        processed_count = 0
         for row_index, row in enumerate(csv_reader):
-            # Skip empty rows
             if not row or all(not val for val in row.values()):
                 continue
                 
-            # Get the file path
             file_path = row.get(file_path_column, "").strip()
             if not file_path:
                 continue
                 
-            print(f"Processing path: {file_path}")
-                
-            # Get the label (if it exists)
-            label_str = None
-            if label_column in row:
-                label_str = row.get(label_column, "").strip()
-                print(f"Found label: {label_str}")
+            # Get label if it exists
+            label_str = row.get(label_column, "").strip() if label_column in row else None
             
-            # Try different approaches to find the file
-            file_found = False
-            img_tensor = None
-            
-            # Try path variations
-            paths_to_try = []
-            
-            # 1. Try exact path
-            paths_to_try.append(file_path)
-            
-            # 2. Try joining with search directories
+            # Try to find the image file
+            found_path = None
             filename = os.path.basename(file_path)
-            for directory in common_dirs:
-                paths_to_try.append(os.path.join(directory, filename))
-                
-                # Also try with parent directory structure (up to 2 levels)
-                parent_dir = os.path.basename(os.path.dirname(file_path))
-                if parent_dir:
-                    paths_to_try.append(os.path.join(directory, parent_dir, filename))
-                    
-                    # Try one more level up
-                    grandparent_dir = os.path.basename(os.path.dirname(os.path.dirname(file_path)))
-                    if grandparent_dir:
-                        paths_to_try.append(os.path.join(directory, grandparent_dir, parent_dir, filename))
             
-            # 3. Try adding common image extensions if no extension
-            if not os.path.splitext(filename)[1]:
-                for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']:
-                    paths_to_try.append(file_path + ext)
-                    for directory in common_dirs:
-                        paths_to_try.append(os.path.join(directory, filename + ext))
+            # Try different path combinations
+            paths_to_try = [
+                file_path,  # Original path
+                *[os.path.join(d, filename) for d in search_dirs],  # Just filename in search dirs
+                *[os.path.join(d, file_path) for d in search_dirs],  # Full path in search dirs
+            ]
             
-            # Remove duplicates
-            paths_to_try = list(set(paths_to_try))
-            
-            # Try all paths
             for test_path in paths_to_try:
                 if os.path.exists(test_path):
-                    try:
-                        print(f"Found file at: {test_path}")
-                        img = Image.open(test_path).convert('RGB')
-                        img_tensor = al_manager.transform(img)
-                        file_found = True
-                        break
-                    except Exception as e:
-                        print(f"Error loading image {test_path}: {str(e)}")
-                        continue
+                    found_path = test_path
+                    break
             
-            if not file_found:
-                print(f"Failed to find image for path: {file_path}")
-                failed_paths.append((file_path, f"File not found. Tried {len(paths_to_try)} variations."))
+            if not found_path:
+                failed_paths.append(file_path)
                 continue
-                
-            if img_tensor is None:
-                continue
-                
-            # Generate a unique image ID
-            img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
             
-            # Process based on whether we have a label
-            if label_str:
-                # Convert string label to numeric index if we haven't seen it before
-                if label_str not in label_to_index:
-                    label_to_index[label_str] = len(label_to_index)
+            # Load the image
+            try:
+                from PIL import Image
+                img = Image.open(found_path).convert('RGB')
+                img_tensor = al_manager.transform(img)
                 
-                label_idx = label_to_index[label_str]
-                # Add to labeled data
-                al_manager.labeled_data[img_id] = (img_tensor, label_idx)
-                labeled_images.append(img_id)
-                print(f"Added image {img_id} to labeled data with label {label_str} (index {label_idx})")
-            else:
-                # No label, add to unlabeled data
-                al_manager.unlabeled_data[img_id] = img_tensor
-                unlabeled_images.append(img_id)
-                print(f"Added image {img_id} to unlabeled data")
+                # Generate unique image ID
+                img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
+                
+                # Process based on whether we have a label
+                if label_str:
+                    # Convert string label to numeric index
+                    if label_str not in label_to_index:
+                        label_to_index[label_str] = len(label_to_index)
+                    
+                    label_idx = label_to_index[label_str]
+                    al_manager.labeled_data[img_id] = (img_tensor, label_idx)
+                    labeled_images.append(img_id)
+                else:
+                    al_manager.unlabeled_data[img_id] = img_tensor
+                    unlabeled_images.append(img_id)
+                
+                processed_count += 1
+                
+            except Exception as img_error:
+                print(f"Error processing image {found_path}: {str(img_error)}")
+                failed_paths.append(file_path)
+                continue
         
-        # Check if we processed any images
-        if not (labeled_images or unlabeled_images):
+        if processed_count == 0:
             raise HTTPException(
-                status_code=400, 
-                detail=f"Could not find or process any images from the CSV. Tried {len(failed_paths)} paths."
+                status_code=400,
+                detail=f"Could not process any images from CSV. Failed paths: {failed_paths[:5]}..."
             )
         
-        # Take some unlabeled images for validation
+        # Move some unlabeled images to validation set
         val_size = int(len(unlabeled_images) * val_split)
         val_indices = unlabeled_images[:val_size] if val_size > 0 else []
         remaining_unlabeled = unlabeled_images[val_size:] if val_size > 0 else unlabeled_images
         
-        # Move validation images to validation set
         for idx in val_indices:
             if idx in al_manager.unlabeled_data:
                 img_tensor = al_manager.unlabeled_data.pop(idx)
                 al_manager.validation_data[idx] = (img_tensor, None)
-                
-        # Print summary
-        print(f"Successfully processed {len(labeled_images)} labeled images and {len(remaining_unlabeled)} unlabeled images")
-        print(f"Failed to process {len(failed_paths)} image paths")
-        print(f"Label mapping: {label_to_index}")
         
-        # Return the results including label mapping
-        return {
+        # Return results
+        result = {
             "status": "success",
-            "message": f"Successfully processed images with labels from CSV",
+            "message": f"Successfully processed {processed_count} images from CSV",
             "stats": {
                 "labeled": len(labeled_images),
                 "unlabeled": len(remaining_unlabeled),
                 "validation": len(val_indices),
-                "total": len(labeled_images) + len(remaining_unlabeled) + len(val_indices),
+                "total": processed_count,
                 "failed": len(failed_paths)
             },
-            "label_mapping": label_to_index,  # This is the important part
-            "failed_paths": failed_paths[:10]
+            "label_mapping": label_to_index,
+            "failed_paths": failed_paths[:10] if failed_paths else []
         }
+        
+        print(f"Processing complete: {result}")
+        return result
         
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process CSV with labels: {str(e)}")
+        print(f"Unexpected error in upload_csv_paths_with_labels: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/recover-batch")
 async def recover_batch(request: BatchRequest):
