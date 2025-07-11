@@ -66,6 +66,8 @@ const ActiveLearningUI = () => {
   const [initialLabeledRatio, setInitialLabeledRatio] = useState(0.4);
   const [trainingMetrics, setTrainingMetrics] = useState(null);
   const [automatedStatus, setAutomatedStatus] = useState(null);
+  const [isProjectFullyInitialized, setIsProjectFullyInitialized] =
+    useState(null);
   const [epochs, setEpochs] = useState(10);
   const [validationAccuracy, setValidationAccuracy] = useState(0);
   const [status, setStatus] = useState({
@@ -102,6 +104,62 @@ const ActiveLearningUI = () => {
   });
   const [lrHistory, setLrHistory] = useState();
   const fileDataRef = useRef(null);
+
+  const getFilteredPredictions = (rawPredictions, userLabels) => {
+    if (!rawPredictions || !userLabels || userLabels.length === 0) {
+      console.log("No predictions or labels provided");
+      return [];
+    }
+
+    console.log("=== PREDICTION FILTERING DEBUG ===");
+    console.log("Raw predictions count:", rawPredictions.length);
+    console.log("User labels:", userLabels);
+
+    // Take only the first N predictions matching our label count
+    const relevantPredictions = rawPredictions.slice(0, userLabels.length);
+    console.log(
+      "Relevant predictions (first",
+      userLabels.length,
+      "):",
+      relevantPredictions
+    );
+
+    // Map to use actual label names with EXPLICIT confidence preservation
+    const mapped = relevantPredictions.map((pred, idx) => {
+      const mappedPred = {
+        label: userLabels[idx], // Use actual label name
+        confidence: Number(pred.confidence), // Ensure it's a number
+        labelIndex: idx,
+        originalLabel: pred.label,
+      };
+      console.log(
+        `Mapping ${idx}: ${pred.label} (${pred.confidence}) -> ${mappedPred.label} (${mappedPred.confidence})`
+      );
+      return mappedPred;
+    });
+
+    console.log("Mapped predictions:", mapped);
+
+    // Sort by confidence descending
+    const sorted = [...mapped].sort((a, b) => {
+      const result = b.confidence - a.confidence;
+      console.log(
+        `Sorting: ${b.label}(${b.confidence}) vs ${a.label}(${a.confidence}) = ${result}`
+      );
+      return result;
+    });
+
+    console.log("Sorted predictions:", sorted);
+
+    // Filter out very low confidence (but keep some threshold for display)
+    const filtered = sorted.filter((pred) => pred.confidence > 0.000001); // Very low threshold
+    console.log("Filtered predictions:", filtered);
+
+    console.log("=== FINAL RESULT ===");
+    console.log("Returning to ModelPredictions:", filtered);
+
+    return filtered;
+  };
 
   useEffect(() => {
     let interval;
@@ -371,7 +429,7 @@ const ActiveLearningUI = () => {
         // Store indicator in state (NOT the actual file)
         setLoadedImages({
           type: "csv-with-labels",
-          fileCount: 1,
+          fileCount: 1, // Make sure this is set to 1, not 0
           labelColumn: labelColumn,
           delimiter: ",",
           detectedLabels: detectedLabels,
@@ -572,10 +630,8 @@ const ActiveLearningUI = () => {
       setIsLoading(true);
       setImageLoadError(null);
 
-      // Only initialize project if not already initialized (avoids 422 error)
       if (!isInitialized) {
         console.log("Initializing new project...");
-
         const initResult = await activeLearnAPI.initializeProject({
           project_name: projectName,
           model_type: selectedModel,
@@ -587,11 +643,11 @@ const ActiveLearningUI = () => {
           epochs: parseInt(epochs),
           learning_rate: lrConfig.initial_lr,
         });
-
-        console.log("Project initialized:", initResult);
         setIsInitialized(true);
       } else {
-        console.log("Project already initialized, processing data only...");
+        console.log(
+          "Project already initialized with pretrained model, processing data only..."
+        );
       }
 
       // Handle CSV with labels using the ref
@@ -614,35 +670,42 @@ const ActiveLearningUI = () => {
           throw new Error("CSV file object is not valid");
         }
 
+        // Create expected label mapping based on frontend labels
+        const expectedLabelMapping = {};
+        labels.forEach((label, index) => {
+          expectedLabelMapping[label] = index;
+        });
+
+        console.log("Frontend labels:", labels);
+        console.log("Expected label mapping:", expectedLabelMapping);
+
         const result = await activeLearnAPI.uploadCSVPathsWithLabels(
           csvFile,
           fileDataRef.current.labelColumn,
           fileDataRef.current.delimiter || ",",
           valSplit,
-          initialLabeledRatio
+          initialLabeledRatio,
+          expectedLabelMapping // Pass the expected mapping!
         );
 
         console.log("CSV with annotations processed:", result);
 
-        // Update labels from label mapping
+        // Verify the mapping and don't overwrite frontend labels
         if (result.label_mapping) {
-          const existingLabels = [...labels];
-          const newLabels = [...existingLabels];
+          console.log("Backend created mapping:", result.label_mapping);
 
-          Object.keys(result.label_mapping).forEach((labelText) => {
-            const labelIndex = result.label_mapping[labelText];
-            while (newLabels.length <= labelIndex) {
-              newLabels.push("");
-            }
-            if (!newLabels[labelIndex] || newLabels[labelIndex] === "") {
-              newLabels[labelIndex] = labelText;
-            }
-          });
+          // Check if they match
+          const mappingMatches = Object.keys(expectedLabelMapping).every(
+            (label) =>
+              result.label_mapping[label] === expectedLabelMapping[label]
+          );
 
-          const finalLabels = newLabels.filter((label) => label);
-          if (finalLabels.length > 0) {
-            setLabels(finalLabels);
-            console.log("Updated labels from CSV:", finalLabels);
+          if (!mappingMatches) {
+            console.warn("Label mapping mismatch detected!");
+            console.warn("Expected:", expectedLabelMapping);
+            console.warn("Got:", result.label_mapping);
+          } else {
+            console.log("Label mappings match correctly!");
           }
         }
 
@@ -808,9 +871,7 @@ const ActiveLearningUI = () => {
           );
           return;
         }
-      }
-      // Handle regular image upload
-      else if (Array.isArray(loadedImages) && loadedImages.length > 0) {
+      } else if (Array.isArray(loadedImages) && loadedImages.length > 0) {
         setImageLoadError("Setting up initial dataset...");
         const result = await activeLearnAPI.uploadData(
           loadedImages,
@@ -829,6 +890,8 @@ const ActiveLearningUI = () => {
           );
         }
       }
+
+      setIsProjectFullyInitialized(true);
     } catch (error) {
       console.error("Project initialization error:", error);
 
@@ -855,11 +918,6 @@ Possible solutions:
         );
       } else {
         setImageLoadError("Error: " + error.message);
-      }
-
-      // Don't reset isInitialized if it was already true (pretrained model case)
-      if (!isInitialized) {
-        setIsInitialized(false);
       }
     } finally {
       setIsLoading(false);
@@ -964,42 +1022,6 @@ Possible solutions:
     }
   };
 
-  const hasLoadedFiles = () => {
-    // Check if we have files in any format
-    if (Array.isArray(loadedImages) && loadedImages.length > 0) {
-      return true; // Regular file upload
-    }
-
-    if (loadedImages && typeof loadedImages === "object") {
-      // CSV uploads or other special formats
-      if (
-        loadedImages.type === "csv-with-labels" &&
-        loadedImages.fileCount > 0
-      ) {
-        return true;
-      }
-      if (
-        loadedImages.type === "combined-with-labels" &&
-        loadedImages.fileCount > 0
-      ) {
-        return true;
-      }
-      if (loadedImages.type === "combined" && loadedImages.fileCount > 0) {
-        return true;
-      }
-      if (loadedImages.type === "csv" && loadedImages.fileCount > 0) {
-        return true;
-      }
-    }
-
-    // Check if we have file data in the ref (CSV uploads)
-    if (fileDataRef.current && fileDataRef.current.csvFile) {
-      return true;
-    }
-
-    return false;
-  };
-
   console.log("loadedImages:", loadedImages);
   console.log("loadedImages type:", typeof loadedImages);
   console.log("loadedImages.length:", loadedImages?.length);
@@ -1070,6 +1092,44 @@ Possible solutions:
       setCurrentImageIndex(0);
     }
   }, [currentBatch]);
+
+  const hasLoadedFiles = () => {
+    // Check if we have files in any format
+    if (Array.isArray(loadedImages) && loadedImages.length > 0) {
+      return true; // Regular file upload
+    }
+
+    if (loadedImages && typeof loadedImages === "object") {
+      // CSV uploads or other special formats
+      if (
+        loadedImages.type === "csv-with-labels" &&
+        loadedImages.fileCount > 0
+      ) {
+        return true;
+      }
+      if (
+        loadedImages.type === "combined-with-labels" &&
+        loadedImages.fileCount > 0
+      ) {
+        return true;
+      }
+      if (loadedImages.type === "combined" && loadedImages.fileCount > 0) {
+        return true;
+      }
+      if (loadedImages.type === "csv" && loadedImages.fileCount > 0) {
+        return true;
+      }
+    }
+
+    // Check if we have file data in the ref (CSV uploads)
+    if (fileDataRef.current && fileDataRef.current.csvFile) {
+      return true;
+    }
+
+    return false;
+  };
+
+  console.log("predictions: ", currentBatch[currentImageIndex]?.predictions);
 
   return (
     <div className="container mx-auto p-6">
@@ -1368,18 +1428,16 @@ Possible solutions:
                       disabled={
                         !projectName ||
                         labels.length === 0 ||
-                        !(
-                          (Array.isArray(loadedImages) &&
-                            loadedImages.length > 0) ||
-                          (loadedImages &&
-                            typeof loadedImages === "object" &&
-                            loadedImages.fileCount > 0)
-                        ) ||
-                        !isInitialized ||
+                        !hasLoadedFiles() ||
+                        isProjectFullyInitialized || // Only disable when fully initialized with data
                         isLoading
                       }
                     >
-                      {isLoading ? "Initializing Project..." : "Start Project"}
+                      {isLoading
+                        ? "Initializing Project..."
+                        : isInitialized && !isProjectFullyInitialized
+                        ? "Start Project with Pretrained Model"
+                        : "Start Project"}
                     </Button>
                     {isInitialized && (
                       <AutomatedTrainingControls
@@ -1440,9 +1498,9 @@ Possible solutions:
                   onImportSuccess={(result) => {
                     setProjectName(result.project_name);
                     setSelectedModel(result.model_type);
-                    setIsInitialized(true);
+                    setIsInitialized(true); // Keep this for ModelAdaptationControls
                     setImageLoadError(
-                      "Pre-trained model imported successfully!"
+                      "Pre-trained model imported successfully! Upload your data and click Start Project."
                     );
 
                     // Fetch any needed state updates
@@ -1458,7 +1516,6 @@ Possible solutions:
                     setImageLoadError(errorMsg);
                   }}
                 />
-
                 {isInitialized && (
                   <ModelAdaptationControls
                     onAdaptSuccess={(result) => {
@@ -1574,12 +1631,62 @@ Possible solutions:
                   validationAccuracy={validationAccuracy}
                 />
 
-                <ModelPredictions
-                  predictions={
-                    currentBatch[currentImageIndex]?.predictions || []
-                  }
-                  labels={labels}
-                />
+                {currentBatch.length > 0 &&
+                  currentImageIndex < currentBatch.length &&
+                  (() => {
+                    const rawPredictions =
+                      currentBatch[currentImageIndex]?.predictions || [];
+                    const filteredPredictions = getFilteredPredictions(
+                      rawPredictions,
+                      labels
+                    );
+
+                    console.log("=== CREATING NEW COMPONENT INSTANCE ===");
+                    console.log("Predictions to render:", filteredPredictions);
+
+                    // Render inline to avoid any component caching issues
+                    return (
+                      <div
+                        key={`predictions-${currentImageIndex}-${Date.now()}`}
+                      >
+                        <h4 className="font-medium mb-2">Model Predictions</h4>
+                        <div className="text-xs text-gray-400 mb-2">
+                          Image {currentImageIndex + 1} - Showing{" "}
+                          {filteredPredictions.length} predictions
+                        </div>
+                        <div className="space-y-2">
+                          {filteredPredictions.map((pred, idx) => {
+                            const confidence = Math.round(
+                              pred.confidence * 100
+                            );
+                            console.log(
+                              `RENDERING: ${pred.label} with ${confidence}% (raw: ${pred.confidence})`
+                            );
+
+                            return (
+                              <div
+                                key={`${pred.label}-${pred.confidence}-${idx}`}
+                                className="flex items-center gap-2"
+                              >
+                                <div className="w-full bg-gray-200 rounded-full h-2.5">
+                                  <div
+                                    className="bg-blue-600 h-2.5 rounded-full"
+                                    style={{
+                                      width: `${Math.max(confidence, 1)}%`,
+                                    }}
+                                  ></div>
+                                </div>
+                                <span className="text-sm whitespace-nowrap">
+                                  {pred.label}:{" "}
+                                  {(pred.confidence * 100).toFixed(2)}%
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                 {isRetraining && (
                   <div className="mt-4">

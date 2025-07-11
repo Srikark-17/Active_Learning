@@ -9,7 +9,7 @@ import {
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
-import { Upload, Database, CheckCircle, AlertCircle } from "lucide-react";
+import { Upload, CheckCircle, AlertCircle } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -35,7 +35,6 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
   const [modelImported, setModelImported] = useState(false);
 
   const modelFileRef = useRef(null);
-  const csvFileRef = useRef(null);
 
   const handleModelFileSelect = async (e) => {
     const file = e.target.files[0];
@@ -63,75 +62,6 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
     } catch (error) {
       setImportError(`Failed to verify model: ${error.message}`);
       setImportStatus(null);
-    }
-  };
-
-  const handleCsvFileSelect = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setCsvFile(file);
-    setImportError(null);
-
-    // Try to detect if this is a CSV file with annotations
-    if (file.name.endsWith(".csv") || file.name.endsWith(".tsv")) {
-      // Read file to auto-detect columns
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const content = e.target.result;
-          const lines = content.split("\n");
-
-          if (lines.length > 0) {
-            // Try to detect delimiter
-            const firstLine = lines[0];
-            let detectedDelimiter = ",";
-
-            if (firstLine.includes("\t")) {
-              detectedDelimiter = "\t";
-            } else if (firstLine.includes(";")) {
-              detectedDelimiter = ";";
-            }
-
-            setDelimiter(detectedDelimiter);
-
-            // Parse header to find annotation column
-            const headers = firstLine
-              .split(detectedDelimiter)
-              .map((h) => h.trim());
-
-            // Look for annotation column
-            const annotationColumns = [
-              "annotation",
-              "label",
-              "class",
-              "category",
-            ];
-            let detectedColumn = null;
-
-            for (const col of annotationColumns) {
-              const found = headers.find((h) => h.toLowerCase() === col);
-              if (found) {
-                detectedColumn = found;
-                break;
-              }
-            }
-
-            if (detectedColumn) {
-              setLabelColumn(detectedColumn);
-              setImportStatus(
-                `CSV detected with annotations column: ${detectedColumn}`
-              );
-            } else {
-              setImportStatus(`CSV loaded, but no annotation column detected`);
-            }
-          }
-        } catch (error) {
-          console.error("Error parsing CSV:", error);
-        }
-      };
-
-      reader.readAsText(file);
     }
   };
 

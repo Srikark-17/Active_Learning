@@ -50,15 +50,26 @@ const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
     0;
 
   const bestValidationAccuracy =
-    metrics?.best_val_acc ||
-    Math.max(...(accuracyData.map((d) => d.accuracy) || [0])) ||
+    // Get best from episode history
     (episode_history?.length > 0
       ? Math.max(
-          ...episode_history.map(
-            (ep) => ep.best_val_acc || ep.train_result?.best_accuracy || 0
-          )
+          ...episode_history
+            .map((ep) => ep.best_val_acc || 0)
+            .filter((acc) => acc > 0),
+          0
         )
-      : 0);
+      : 0) ||
+    // Fallback to metrics
+    metrics?.best_val_acc ||
+    // Fallback to accuracy data
+    (accuracyData?.length > 0
+      ? Math.max(
+          ...accuracyData.map((d) => d.accuracy).filter((acc) => acc > 0),
+          0
+        )
+      : 0) ||
+    // Final fallback
+    0;
 
   return (
     <Card className="mb-4">
@@ -202,11 +213,11 @@ const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
                 <div key={idx} className="text-sm">
                   <div className="flex justify-between">
                     <span>
-                      Episode {episode.episode ? episode.episode : "N/A"}
+                      Episode {episode.episode ? episode.episode : "0"}
                     </span>
                     <span>
                       Best Acc:{" "}
-                      {metrics.best_val_acc ? metrics.best_val_acc : "0.0"}%
+                      {episode.best_val_acc ? episode.best_val_acc : "0.0"}%
                     </span>
                   </div>
                 </div>
