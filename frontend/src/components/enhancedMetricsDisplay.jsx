@@ -13,22 +13,52 @@ import {
 const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
   // For debugging
   console.log("Metrics received:", metrics);
+  console.log("Episode history received:", episode_history);
 
   // Transform loss data directly from the API format
   const lossData =
+    metrics?.current_epoch_losses?.x?.map((x, i) => ({
+      epoch: x,
+      loss: metrics.current_epoch_losses.y[i],
+    })) ||
     metrics?.currentEpochLosses?.x?.map((x, i) => ({
       epoch: x,
       loss: metrics.currentEpochLosses.y[i],
-    })) || [];
+    })) ||
+    [];
 
   // Transform accuracy data
   const accuracyData =
+    metrics?.episode_accuracies?.x?.map((x, i) => ({
+      episode: x,
+      accuracy: metrics.episode_accuracies.y[i],
+    })) ||
     metrics?.episodeAccuracies?.x?.map((x, i) => ({
       episode: x,
       accuracy: metrics.episodeAccuracies.y[i],
-    })) || [];
+    })) ||
+    [];
 
   console.log("Transformed loss data:", lossData);
+  console.log("Transformed accuracy data:", accuracyData);
+
+  // Get current episode and best accuracy from multiple possible sources
+  const currentEpisode =
+    metrics?.current_episode ||
+    episode_history?.length ||
+    Math.max(...(accuracyData.map((d) => d.episode) || [0])) ||
+    0;
+
+  const bestValidationAccuracy =
+    metrics?.best_val_acc ||
+    Math.max(...(accuracyData.map((d) => d.accuracy) || [0])) ||
+    (episode_history?.length > 0
+      ? Math.max(
+          ...episode_history.map(
+            (ep) => ep.best_val_acc || ep.train_result?.best_accuracy || 0
+          )
+        )
+      : 0);
 
   return (
     <Card className="mb-4">
@@ -42,16 +72,14 @@ const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
             <h3 className="font-medium text-sm text-gray-600">
               Current Episode
             </h3>
-            <p className="text-2xl font-bold">
-              {metrics?.current_episode || 0}
-            </p>
+            <p className="text-2xl font-bold">{currentEpisode}</p>
           </div>
           <div>
             <h3 className="font-medium text-sm text-gray-600">
               Best Validation Accuracy
             </h3>
             <p className="text-2xl font-bold">
-              {metrics?.best_val_acc?.toFixed(2) || 0}%
+              {bestValidationAccuracy.toFixed(2)}%
             </p>
           </div>
         </div>
@@ -85,15 +113,15 @@ const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
                   dataKey="loss"
                   stroke="#82ca9d"
                   name="Training Loss"
-                  dot={false} // Remove dots for cleaner look with many points
-                  activeDot={{ r: 8 }} // Larger dot on hover
+                  dot={false}
+                  activeDot={{ r: 8 }}
                 />
               </LineChart>
             </ResponsiveContainer>
           </div>
         )}
 
-        {/* Episode Accuracy Chart - only show if there's data */}
+        {/* Episode Accuracy Chart */}
         {accuracyData.length > 0 && (
           <div className="h-80">
             <h3 className="font-medium mb-4">Episode Accuracy</h3>
@@ -129,7 +157,7 @@ const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
           </div>
         )}
 
-        {/* Learning Rate Chart - only show if there's data */}
+        {/* Learning Rate Chart */}
         {lr_history && lr_history.length > 0 && (
           <div className="h-80">
             <h3 className="font-medium mb-4">Learning Rate</h3>
@@ -173,14 +201,12 @@ const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
               {episode_history.map((episode, idx) => (
                 <div key={idx} className="text-sm">
                   <div className="flex justify-between">
-                    <span>Episode {episode.episode}</span>
+                    <span>
+                      Episode {episode.episode ? episode.episode : "N/A"}
+                    </span>
                     <span>
                       Best Acc:{" "}
-                      {episode.best_val_acc
-                        ? episode.best_val_acc.toFixed(2)
-                        : episode.train_result?.best_accuracy?.toFixed(2) ||
-                          "0.00"}
-                      %
+                      {metrics.best_val_acc ? metrics.best_val_acc : "0.0"}%
                     </span>
                   </div>
                 </div>

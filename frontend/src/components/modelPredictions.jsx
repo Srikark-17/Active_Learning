@@ -1,11 +1,43 @@
 import React from "react";
 
-// In ModelPredictions component
 const ModelPredictions = ({ predictions = [], labels = [] }) => {
-  // Filter out predictions with 0% probability
-  const filteredPredictions = predictions.filter(
-    (pred) => Math.round(pred.confidence * 100) > 0
-  );
+  // Debug logging
+  console.log("ModelPredictions Debug:");
+  console.log("predictions:", predictions);
+  console.log("labels:", labels);
+  console.log("labels.length:", labels.length);
+
+  // If no labels are defined by user, don't show predictions
+  if (!labels || labels.length === 0) {
+    return <div className="text-sm text-gray-500">No labels defined yet</div>;
+  }
+
+  // Only show predictions for the user-defined labels (first N classes)
+  const userDefinedPredictions = predictions.slice(0, labels.length);
+
+  console.log("userDefinedPredictions:", userDefinedPredictions);
+
+  // Filter out predictions with very low confidence and only show user-defined classes
+  const filteredPredictions = userDefinedPredictions
+    .map((pred, idx) => {
+      const mappedPred = {
+        ...pred,
+        labelText: labels[idx] || `Class ${idx}`,
+        labelIndex: idx,
+      };
+      console.log(`Mapping prediction ${idx}:`, mappedPred);
+      return mappedPred;
+    })
+    .filter((pred) => {
+      const confidence = Math.round(pred.confidence * 100);
+      const shouldShow = confidence > 0 && !pred.labelText.startsWith("Class");
+      console.log(
+        `Filter check for ${pred.labelText}: confidence=${confidence}%, shouldShow=${shouldShow}`
+      );
+      return shouldShow;
+    });
+
+  console.log("filteredPredictions:", filteredPredictions);
 
   if (!filteredPredictions || filteredPredictions.length === 0) {
     return (
@@ -15,17 +47,23 @@ const ModelPredictions = ({ predictions = [], labels = [] }) => {
     );
   }
 
+  // Sort by confidence (highest first)
+  const sortedPredictions = filteredPredictions.sort(
+    (a, b) => b.confidence - a.confidence
+  );
+
   return (
     <div>
       <h4 className="font-medium mb-2">Model Predictions</h4>
       <div className="space-y-2">
-        {filteredPredictions.map((pred, idx) => {
-          const labelIndex = parseInt(pred.label.replace("Label ", ""));
-          const labelText = labels[labelIndex] || pred.label;
+        {sortedPredictions.map((pred, idx) => {
           const confidence = Math.round(pred.confidence * 100);
 
-          // Skip if confidence is 0%
-          if (confidence === 0) return null;
+          console.log(
+            `Rendering prediction ${idx}:`,
+            pred.labelText,
+            confidence
+          );
 
           return (
             <div key={idx} className="flex items-center gap-2">
@@ -36,7 +74,7 @@ const ModelPredictions = ({ predictions = [], labels = [] }) => {
                 ></div>
               </div>
               <span className="text-sm whitespace-nowrap">
-                {labelText}: {confidence}%
+                {pred.labelText}: {confidence}%
               </span>
             </div>
           );

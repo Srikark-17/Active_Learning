@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Card,
   CardHeader,
@@ -555,15 +555,13 @@ const ActiveLearningUI = () => {
       return;
     }
 
-    if (loadedImages.length === 0) {
-      setImageLoadError("Please upload images or a CSV file with image paths");
-      return;
-    }
-
+    // Check if we have files (handle both array and object formats)
     const hasFiles =
       (Array.isArray(loadedImages) && loadedImages.length > 0) ||
-      (loadedImages.type && loadedImages.fileCount > 0) ||
-      fileDataRef.current;
+      (loadedImages &&
+        typeof loadedImages === "object" &&
+        loadedImages.fileCount > 0) ||
+      (fileDataRef.current && fileDataRef.current.csvFile);
 
     if (!hasFiles) {
       setImageLoadError("Please upload images or a CSV file with image paths");
@@ -574,22 +572,29 @@ const ActiveLearningUI = () => {
       setIsLoading(true);
       setImageLoadError(null);
 
-      // Initialize project with configuration
-      const initResult = await activeLearnAPI.initializeProject({
-        project_name: projectName,
-        model_type: selectedModel,
-        num_classes: labels.length,
-        val_split: valSplit,
-        initial_labeled_ratio: initialLabeledRatio,
-        sampling_strategy: samplingStrategy,
-        batch_size: parseInt(batchSize),
-        epochs: parseInt(epochs),
-        learning_rate: lrConfig.initial_lr,
-      });
+      // Only initialize project if not already initialized (avoids 422 error)
+      if (!isInitialized) {
+        console.log("Initializing new project...");
 
-      console.log("Project initialized:", initResult);
-      setIsInitialized(true);
+        const initResult = await activeLearnAPI.initializeProject({
+          project_name: projectName,
+          model_type: selectedModel,
+          num_classes: labels.length,
+          val_split: valSplit,
+          initial_labeled_ratio: initialLabeledRatio,
+          sampling_strategy: samplingStrategy,
+          batch_size: parseInt(batchSize),
+          epochs: parseInt(epochs),
+          learning_rate: lrConfig.initial_lr,
+        });
 
+        console.log("Project initialized:", initResult);
+        setIsInitialized(true);
+      } else {
+        console.log("Project already initialized, processing data only...");
+      }
+
+      // Handle CSV with labels using the ref
       if (fileDataRef.current?.type === "csv-with-labels") {
         setImageLoadError(
           `Processing CSV with annotations (using column: ${fileDataRef.current.labelColumn})...`
@@ -598,7 +603,7 @@ const ActiveLearningUI = () => {
         // Get the actual File object from the ref
         const csvFile = fileDataRef.current.csvFile;
 
-        console.log("Using CSV file from ref:", {
+        console.log("Processing CSV file:", {
           name: csvFile?.name,
           type: csvFile?.type,
           size: csvFile?.size,
@@ -610,7 +615,7 @@ const ActiveLearningUI = () => {
         }
 
         const result = await activeLearnAPI.uploadCSVPathsWithLabels(
-          csvFile, // This should now be the actual File object
+          csvFile,
           fileDataRef.current.labelColumn,
           fileDataRef.current.delimiter || ",",
           valSplit,
@@ -667,9 +672,17 @@ const ActiveLearningUI = () => {
         }
 
         // Get first batch for active learning
-        await getNextBatch();
+        try {
+          await getNextBatch();
+          setImageLoadError("Ready for active learning");
+        } catch (batchError) {
+          console.error("Error getting first batch:", batchError);
+          setImageLoadError(
+            "Warning: Could not get first batch - " + batchError.message
+          );
+        }
       }
-      // Check if we have a special combined upload with labels
+      // Handle combined upload with labels
       else if (loadedImages.type === "combined-with-labels") {
         setImageLoadError(
           `Processing CSV with labels (${loadedImages.labelColumn}) and images together...`
@@ -691,7 +704,6 @@ const ActiveLearningUI = () => {
               typeof newLabels[labelIndex] === "undefined" ||
               newLabels[labelIndex] === ""
             ) {
-              // Fill any gaps with empty labels
               while (newLabels.length <= labelIndex) {
                 newLabels.push("");
               }
@@ -711,19 +723,15 @@ const ActiveLearningUI = () => {
         // Start training if we have enough labeled data
         if (result.stats.labeled > 0) {
           setImageLoadError("Starting initial training with annotated data...");
-
           try {
             const episodeResult = await activeLearnAPI.startEpisode(
               epochs,
               batchSize
             );
-
             console.log("Initial training result:", episodeResult);
-
             if (episodeResult.final_val_acc) {
               setValidationAccuracy(episodeResult.final_val_acc);
             }
-
             setImageLoadError("Initial training complete");
           } catch (error) {
             console.error("Initial training error:", error);
@@ -732,9 +740,17 @@ const ActiveLearningUI = () => {
         }
 
         // Get batch for active learning
-        await getNextBatch();
+        try {
+          await getNextBatch();
+          setImageLoadError("Ready for active learning");
+        } catch (batchError) {
+          console.error("Error getting batch:", batchError);
+          setImageLoadError(
+            "Warning: Could not get batch - " + batchError.message
+          );
+        }
       }
-      // Handle the case where we have both CSV and image files (combined upload without labels)
+      // Handle combined upload without labels
       else if (loadedImages.type === "combined") {
         setImageLoadError("Processing CSV and image files together...");
         const result = await activeLearnAPI.uploadCombined(
@@ -747,17 +763,21 @@ const ActiveLearningUI = () => {
           `Successfully processed ${result.split_info.total_images} images`
         );
 
-        // Get first batch for active learning
-        await getNextBatch();
+        try {
+          await getNextBatch();
+          setImageLoadError("Ready for active learning");
+        } catch (batchError) {
+          console.error("Error getting batch:", batchError);
+          setImageLoadError(
+            "Warning: Could not get batch - " + batchError.message
+          );
+        }
       }
       // Handle CSV-only upload
       else if (loadedImages.type === "csv") {
         setImageLoadError("Processing CSV file with image paths...");
 
-        // Get the CSV file and delimiter
         const csvFile = loadedImages.file;
-
-        // Use stored delimiter
         const delimiter = loadedImages.delimiter || ",";
 
         try {
@@ -772,31 +792,25 @@ const ActiveLearningUI = () => {
             `Successfully loaded ${result.split_info.total_images} images from CSV`
           );
 
-          // Get first batch for active learning
-          await getNextBatch();
+          try {
+            await getNextBatch();
+            setImageLoadError("Ready for active learning");
+          } catch (batchError) {
+            console.error("Error getting batch:", batchError);
+            setImageLoadError(
+              "Warning: Could not get batch - " + batchError.message
+            );
+          }
         } catch (error) {
           console.error("CSV upload error:", error);
           setImageLoadError(
             `Error processing CSV: ${error.message}. Try uploading images directly or using the "Upload CSV + Images Together" option.`
           );
-          setIsInitialized(false);
-          setIsLoading(false);
           return;
         }
-      } else if (Array.isArray(loadedImages) && loadedImages.length > 0) {
-        setImageLoadError("Setting up initial dataset...");
-        const result = await activeLearnAPI.uploadData(
-          loadedImages,
-          valSplit,
-          initialLabeledRatio
-        );
-        console.log("Data split result:", result);
-        await getNextBatch();
-        setImageLoadError(null);
       }
-
       // Handle regular image upload
-      else {
+      else if (Array.isArray(loadedImages) && loadedImages.length > 0) {
         setImageLoadError("Setting up initial dataset...");
         const result = await activeLearnAPI.uploadData(
           loadedImages,
@@ -805,120 +819,52 @@ const ActiveLearningUI = () => {
         );
         console.log("Data split result:", result);
 
-        // Get first batch of images
-        setImageLoadError("Getting first batch of images...");
-        await getNextBatch();
-        setImageLoadError(null);
+        try {
+          await getNextBatch();
+          setImageLoadError("Ready for active learning");
+        } catch (batchError) {
+          console.error("Error getting batch:", batchError);
+          setImageLoadError(
+            "Warning: Could not get batch - " + batchError.message
+          );
+        }
       }
     } catch (error) {
       console.error("Project initialization error:", error);
-      setImageLoadError(error.message);
-      setIsInitialized(false);
+
+      // Handle specific error types
+      if (
+        error.message &&
+        error.message.includes(
+          "Could not find or process any images from the CSV"
+        )
+      ) {
+        setImageLoadError(
+          `Image file path issue: The system couldn't find the image files referenced in your CSV. 
+This usually happens when the paths in the CSV don't match where images are stored on your system.
+
+Possible solutions:
+1. Use absolute paths in your CSV
+2. Place images in the same folder as your application
+3. Update your CSV with correct relative paths
+4. Try using just filenames (without directory paths) in your CSV`
+        );
+      } else if (error.message && error.message.includes("422")) {
+        setImageLoadError(
+          "Project initialization failed. Try reloading the page and starting fresh."
+        );
+      } else {
+        setImageLoadError("Error: " + error.message);
+      }
+
+      // Don't reset isInitialized if it was already true (pretrained model case)
+      if (!isInitialized) {
+        setIsInitialized(false);
+      }
     } finally {
       setIsLoading(false);
     }
-
-    try {
-      // Get first batch for active learning
-      setImageLoadError("Getting first batch of images...");
-      await getNextBatch();
-      setImageLoadError("Ready for active learning");
-    } catch (batchError) {
-      console.error("Failed to get first batch:", batchError);
-      setImageLoadError(
-        `Failed to get first batch: ${batchError.message}. Trying recovery...`
-      );
-
-      // Try to recover with simple random sampling
-      try {
-        const result = await activeLearnAPI.recoverBatch(
-          "random",
-          Math.min(batchSize, status.unlabeled_count || 32)
-        );
-        console.log("Batch recovery succeeded:", result);
-        setCurrentBatch(result);
-        setCurrentImageIndex(0);
-        if (result.length > 0) {
-          setCurrentImage(activeLearnAPI.getImageUrl(result[0].image_id));
-        }
-        setImageLoadError(
-          "Recovered from error. Using simple random sampling for first batch."
-        );
-      } catch (recoveryError) {
-        console.error("Batch recovery also failed:", recoveryError);
-        setImageLoadError(
-          "Could not retrieve images for labeling. Try changing batch size or sampling strategy."
-        );
-      }
-    }
-
-    // Add this to the image processing error handling in handleStartProject
-    if (
-      error.message &&
-      error.message.includes(
-        "Could not find or process any images from the CSV"
-      )
-    ) {
-      // Show more helpful error message
-      setImageLoadError(
-        `Image file path issue: The system couldn't find the image files referenced in your CSV. 
-     This usually happens when the paths in the CSV don't match where images are stored on your system.
-     
-     Possible solutions:
-     1. Use absolute paths in your CSV
-     2. Place images in the same folder as your application
-     3. Update your CSV with correct relative paths
-     4. Try using just filenames (without directory paths) in your CSV
-     
-     Current working directory: ${error.current_working_directory || "unknown"}
-     `
-      );
-
-      // Show debug dialog with CSV details
-      const debugCSV = async () => {
-        try {
-          const result = await activeLearnAPI.debugCSVFile(loadedImages.file);
-          console.log("CSV debug result:", result);
-          // Show sample paths in error message
-          if (result.sample_rows && result.sample_rows.length > 0) {
-            const filePathColumn = Object.keys(result.sample_rows[0])[0]; // First column
-            const samplePaths = result.sample_rows
-              .map((row) => row[filePathColumn])
-              .join("\n");
-            setImageLoadError(
-              `Sample paths from CSV:\n${samplePaths}\n\nCurrent directory: ${result.current_directory}\n` +
-                `The system searched in: ${result.search_directories.join(
-                  ", "
-                )}`
-            );
-          }
-        } catch (debugError) {
-          console.error("CSV debug error:", debugError);
-        }
-      };
-
-      debugCSV();
-    } else {
-      // Regular error handling
-      setImageLoadError(error.message);
-    }
   };
-
-  async function debugCSVFile(csvFile) {
-    const formData = new FormData();
-    formData.append("csv_file", csvFile);
-
-    const response = await fetch(`${API_URL}/debug-csv-file`, {
-      method: "POST",
-      body: formData,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to debug CSV file: ${response.statusText}`);
-    }
-
-    return await response.json();
-  }
 
   useEffect(() => {
     let interval;
@@ -1017,6 +963,47 @@ const ActiveLearningUI = () => {
       setImageLoadError(error.message);
     }
   };
+
+  const hasLoadedFiles = () => {
+    // Check if we have files in any format
+    if (Array.isArray(loadedImages) && loadedImages.length > 0) {
+      return true; // Regular file upload
+    }
+
+    if (loadedImages && typeof loadedImages === "object") {
+      // CSV uploads or other special formats
+      if (
+        loadedImages.type === "csv-with-labels" &&
+        loadedImages.fileCount > 0
+      ) {
+        return true;
+      }
+      if (
+        loadedImages.type === "combined-with-labels" &&
+        loadedImages.fileCount > 0
+      ) {
+        return true;
+      }
+      if (loadedImages.type === "combined" && loadedImages.fileCount > 0) {
+        return true;
+      }
+      if (loadedImages.type === "csv" && loadedImages.fileCount > 0) {
+        return true;
+      }
+    }
+
+    // Check if we have file data in the ref (CSV uploads)
+    if (fileDataRef.current && fileDataRef.current.csvFile) {
+      return true;
+    }
+
+    return false;
+  };
+
+  console.log("loadedImages:", loadedImages);
+  console.log("loadedImages type:", typeof loadedImages);
+  console.log("loadedImages.length:", loadedImages?.length);
+  console.log("loadedImages.fileCount:", loadedImages?.fileCount);
 
   const handleSaveCheckpoint = async () => {
     try {
@@ -1375,15 +1362,20 @@ const ActiveLearningUI = () => {
                         <AlertDescription>{imageLoadError}</AlertDescription>
                       </Alert>
                     )}
-
                     <Button
                       className="w-full"
                       onClick={handleStartProject}
                       disabled={
                         !projectName ||
                         labels.length === 0 ||
-                        loadedImages.length === 0 ||
-                        isInitialized ||
+                        !(
+                          (Array.isArray(loadedImages) &&
+                            loadedImages.length > 0) ||
+                          (loadedImages &&
+                            typeof loadedImages === "object" &&
+                            loadedImages.fileCount > 0)
+                        ) ||
+                        !isInitialized ||
                         isLoading
                       }
                     >

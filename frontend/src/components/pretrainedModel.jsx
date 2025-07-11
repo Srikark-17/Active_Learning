@@ -328,65 +328,6 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
           )}
         </div>
 
-        <div className="space-y-2">
-          <Label>Optional: Import CSV with Annotations</Label>
-          <div className="flex gap-2">
-            <Button
-              onClick={() => csvFileRef.current.click()}
-              variant="outline"
-              className="w-full"
-              disabled={isImporting}
-            >
-              <Database className="h-4 w-4 mr-2" />
-              Select CSV File
-            </Button>
-            <input
-              type="file"
-              ref={csvFileRef}
-              onChange={handleCsvFileSelect}
-              className="hidden"
-              accept=".csv,.tsv,.txt"
-            />
-          </div>
-          {csvFile && (
-            <div className="text-sm text-gray-600">
-              Selected: {csvFile.name}
-            </div>
-          )}
-          {csvFile && (
-            <div className="space-y-2">
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <Label>Label Column</Label>
-                  <Input
-                    value={labelColumn}
-                    onChange={(e) => setLabelColumn(e.target.value)}
-                    disabled={isImporting}
-                    placeholder="annotation"
-                  />
-                </div>
-                <div className="flex-1">
-                  <Label>Delimiter</Label>
-                  <Select
-                    value={delimiter}
-                    onValueChange={setDelimiter}
-                    disabled={isImporting}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select delimiter" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value=",">Comma (,)</SelectItem>
-                      <SelectItem value="\t">Tab</SelectItem>
-                      <SelectItem value=";">Semicolon (;)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
         {importError && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
@@ -409,27 +350,6 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
         >
           {isImporting ? "Importing..." : "Import Model"}
         </Button>
-
-        {modelImported && (
-          <div className="w-full flex gap-2">
-            <Button
-              className="flex-1"
-              variant="outline"
-              onClick={() => handleAdaptModel("last_layer")}
-              disabled={isImporting}
-            >
-              Fine-tune Last Layer
-            </Button>
-            <Button
-              className="flex-1"
-              variant="outline"
-              onClick={() => handleAdaptModel("full_finetune")}
-              disabled={isImporting}
-            >
-              Full Fine-tuning
-            </Button>
-          </div>
-        )}
       </CardFooter>
     </Card>
   );
