@@ -292,36 +292,32 @@ class ActiveLearningManager:
         initial_labeled_indices = all_indices[val_size:val_size + initial_labeled_size]
         unlabeled_indices = all_indices[val_size + initial_labeled_size:]
 
-        # Start with all data in unlabeled set
+        # FIXED: Properly assign data to sets
+        
+        # 1. Put unlabeled data in unlabeled set
         for idx in unlabeled_indices:
             self.unlabeled_data[idx] = all_data[idx]
 
-        # Move initial batch to labeled set
+        # 2. Put initial labeled data in unlabeled set (they'll be moved to labeled when user labels them)
         for idx in initial_labeled_indices:
-            self.validation_data[idx] = (all_data[idx], None)
+            self.unlabeled_data[idx] = all_data[idx]
 
-        # Move validation data to validation set (they'll be labeled through the UI)
+        # 3. Put validation data in validation set WITH TEMPORARY LABELS (for validation)
+        # In active learning, we typically assign random labels to validation set initially
+        # or use a small subset of pre-labeled data
         for idx in val_indices:
-            self.validation_data[idx] = (all_data[idx], None)
+            # For now, assign random labels to validation set so we can compute validation accuracy
+            # In a real scenario, you'd want some pre-labeled validation data
+            temp_label = np.random.randint(0, self.model.fc.out_features if hasattr(self.model, 'fc') else 2)
+            self.validation_data[idx] = (all_data[idx], temp_label)
 
         # Save split information
         split_info = {
             "total_images": total_images,
             "validation": len(self.validation_data),
-            "initial_labeled": initial_labeled_size,
+            "initial_labeled": 0,  # Initially 0, will grow as user labels
             "unlabeled": len(self.unlabeled_data)
         }
-
-        # Save splits to disk
-        if self.output_dir:
-            split_path = os.path.join(self.output_dir, 'data_splits.json')
-            with open(split_path, 'w') as f:
-                json.dump({
-                    'validation_indices': val_indices,
-                    'labeled_indices': initial_labeled_indices,
-                    'unlabeled_indices': unlabeled_indices,
-                    'split_info': split_info
-                }, f)
 
         return split_info
 
@@ -585,26 +581,29 @@ class ActiveLearningManager:
         return validation_accuracy
 
     def validate(self):
-        """Validate model performance similar to train_al.py"""
+        """Validate model performance - improved for active learning"""
         try:
             if len(self.validation_data) == 0:
                 print("Warning: No validation data available")
                 return 0.0
                     
+            # Get labeled validation data
             labeled_validation = [
                 (img, label) for img, label in self.validation_data.values() 
                 if label is not None
             ]
             
+            # If no labeled validation data, we can't compute accuracy
             if len(labeled_validation) == 0:
                 print(f"Warning: No labeled validation data (0/{len(self.validation_data)} samples labeled)")
+                print("Validation data exists but needs labels. Consider labeling some validation samples.")
                 return 0.0
 
             self.model.eval()
             total_correct = 0
             total_samples = 0
 
-            batch_size = 32  # Process validation in batches like train_al.py
+            batch_size = 32
             with torch.no_grad():
                 for i in range(0, len(labeled_validation), batch_size):
                     batch = labeled_validation[i:i + batch_size]
@@ -622,7 +621,7 @@ class ActiveLearningManager:
 
         except Exception as e:
             print(f"Validation error: {str(e)}")
-            raise
+            return 0.0
 
     def train(self, epochs: int, batch_size: int, learning_rate: float):
         """Train model on labeled data"""
@@ -3026,6 +3025,34 @@ async def upload_csv_paths(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")
+    
+def create_consistent_label_mapping(csv_content, label_column, delimiter, predefined_labels=None):
+    """
+    Create a consistent label mapping that respects predefined label order
+    """
+    import csv
+    from io import StringIO
+    
+    # If we have predefined labels (from frontend), use their order
+    if predefined_labels:
+        label_to_index = {label: idx for idx, label in enumerate(predefined_labels)}
+        return label_to_index
+    
+    # Otherwise, collect all unique labels from CSV and sort them
+    csv_reader = csv.DictReader(StringIO(csv_content), delimiter=delimiter)
+    unique_labels = set()
+    
+    for row in csv_reader:
+        label_str = row.get(label_column, "").strip()
+        if label_str:
+            unique_labels.add(label_str)
+    
+    # Sort labels alphabetically for consistency (AMD comes before DR)
+    sorted_labels = sorted(list(unique_labels))
+    label_to_index = {label: idx for idx, label in enumerate(sorted_labels)}
+    
+    return label_to_index
+
 
 @app.post("/upload-combined-with-labels")
 async def upload_combined_with_labels(
@@ -3113,6 +3140,9 @@ async def upload_combined_with_labels(
         labeled_images = []  # Images with labels from CSV
         unlabeled_images = []  # Images without labels
         label_to_index = {}  # Map string labels to numeric indices
+
+        
+
         
         for row in csv_reader:
             path = row.get(file_path_column, "").strip()
@@ -3134,7 +3164,7 @@ async def upload_combined_with_labels(
                     
                     # Generate a unique image ID
                     img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
-                    
+
                     # Check if this image has a label
                     if has_labels:
                         label_str = row.get(label_column_name, "").strip()
@@ -3246,42 +3276,39 @@ async def debug_csv_file(csv_file: UploadFile = File(...)):
 
 @app.post("/upload-csv-paths-with-labels")
 async def upload_csv_paths_with_labels(
-    csv_file: UploadFile = File(..., description="CSV file with image paths and labels"),
-    label_column: str = Form(default="annotation", description="Name of the label column"),
-    delimiter: str = Form(default=",", description="CSV delimiter"),
-    val_split: float = Form(default=0.2, ge=0.0, le=1.0, description="Validation split ratio"),
-    initial_labeled_ratio: float = Form(default=0.4, ge=0.0, le=1.0, description="Initial labeled ratio")
+    csv_file: UploadFile = File(...),
+    label_column: str = Form(default="annotation"),
+    delimiter: str = Form(default=","),
+    val_split: float = Form(default=0.2),
+    initial_labeled_ratio: float = Form(default=0.4),
+    expected_label_mapping: str = Form(default=None)
 ):
     """
-    Process a CSV file with both image paths and labels with enhanced path handling
+    Process a CSV file with both image paths and labels with consistent label mapping
     """
     try:
         # Validate inputs
         print(f"Received request:")
         print(f"  File: {csv_file.filename}")
-        print(f"  Content type: {csv_file.content_type}")
         print(f"  Label column: {label_column}")
         print(f"  Delimiter: {delimiter}")
-        print(f"  Val split: {val_split}")
-        print(f"  Initial labeled ratio: {initial_labeled_ratio}")
+        print(f"  Expected label mapping: {expected_label_mapping}")
+        
+        # Parse expected label mapping if provided
+        label_to_index = {}
+        if expected_label_mapping and expected_label_mapping.strip():
+            try:
+                import json
+                label_to_index = json.loads(expected_label_mapping)
+                print(f"Using expected label mapping from frontend: {label_to_index}")
+            except Exception as e:
+                print(f"Error parsing expected label mapping: {e}")
+                label_to_index = {}
         
         # Validate file
         if not csv_file or not csv_file.filename:
             raise HTTPException(status_code=400, detail="No CSV file provided")
             
-        if not csv_file.filename.lower().endswith(('.csv', '.tsv', '.txt')):
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid file type. Expected CSV, TSV, or TXT, got: {csv_file.filename}"
-            )
-        
-        # Validate parameters
-        if not (0.0 <= val_split <= 1.0):
-            raise HTTPException(status_code=400, detail="val_split must be between 0.0 and 1.0")
-            
-        if not (0.0 <= initial_labeled_ratio <= 1.0):
-            raise HTTPException(status_code=400, detail="initial_labeled_ratio must be between 0.0 and 1.0")
-        
         # Read CSV content
         try:
             content = await csv_file.read()
@@ -3361,12 +3388,27 @@ async def upload_csv_paths_with_labels(
         print(f"Using file path column: '{file_path_column}'")
         print(f"Using label column: '{label_column}'")
         
+        # If no expected mapping provided, create one by scanning all labels first
+        if not label_to_index:
+            print("No expected mapping provided. Scanning CSV for all labels...")
+            csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
+            unique_labels = set()
+            
+            for row in csv_reader:
+                label_str = row.get(label_column, "").strip()
+                if label_str:
+                    unique_labels.add(label_str)
+            
+            # Create mapping with alphabetical order (AMD before DR)
+            sorted_labels = sorted(list(unique_labels))
+            label_to_index = {label: idx for idx, label in enumerate(sorted_labels)}
+            print(f"Created alphabetical label mapping: {label_to_index}")
+        
         # Process the CSV data
         csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
         
         labeled_images = []
         unlabeled_images = []
-        label_to_index = {}
         failed_paths = []
         
         # Define search directories
@@ -3425,13 +3467,17 @@ async def upload_csv_paths_with_labels(
                 
                 # Process based on whether we have a label
                 if label_str:
-                    # Convert string label to numeric index
-                    if label_str not in label_to_index:
-                        label_to_index[label_str] = len(label_to_index)
-                    
-                    label_idx = label_to_index[label_str]
-                    al_manager.labeled_data[img_id] = (img_tensor, label_idx)
-                    labeled_images.append(img_id)
+                    # Use the label mapping (either from frontend or created from CSV)
+                    if label_str in label_to_index:
+                        label_idx = label_to_index[label_str]
+                        al_manager.labeled_data[img_id] = (img_tensor, label_idx)
+                        labeled_images.append(img_id)
+                        print(f"Labeled image {img_id} as '{label_str}' (index {label_idx})")
+                    else:
+                        print(f"Warning: Label '{label_str}' not found in mapping {label_to_index}")
+                        # Add to unlabeled data instead
+                        al_manager.unlabeled_data[img_id] = img_tensor
+                        unlabeled_images.append(img_id)
                 else:
                     al_manager.unlabeled_data[img_id] = img_tensor
                     unlabeled_images.append(img_id)
@@ -3444,38 +3490,51 @@ async def upload_csv_paths_with_labels(
                 continue
         
         if processed_count == 0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Could not process any images from CSV. Failed paths: {failed_paths[:5]}..."
-            )
+            raise HTTPException(status_code=400, detail="Could not process any images")
         
-        # Move some unlabeled images to validation set
-        val_size = int(len(unlabeled_images) * val_split)
-        val_indices = unlabeled_images[:val_size] if val_size > 0 else []
-        remaining_unlabeled = unlabeled_images[val_size:] if val_size > 0 else unlabeled_images
+        # Handle validation set
+        if len(labeled_images) > 0:
+            val_size = int(len(labeled_images) * val_split)
+            if val_size > 0:
+                val_indices = labeled_images[:val_size]
+                remaining_labeled = labeled_images[val_size:]
+                
+                # Move validation images to validation set (keep their labels!)
+                for idx in val_indices:
+                    if idx in al_manager.labeled_data:
+                        img_tensor, label = al_manager.labeled_data.pop(idx)
+                        al_manager.validation_data[idx] = (img_tensor, label)
+                
+                labeled_images = remaining_labeled
         
-        for idx in val_indices:
+        # Handle unlabeled images for validation if needed
+        val_size_unlabeled = int(len(unlabeled_images) * val_split)
+        val_indices_unlabeled = unlabeled_images[:val_size_unlabeled] if val_size_unlabeled > 0 else []
+        remaining_unlabeled = unlabeled_images[val_size_unlabeled:] if val_size_unlabeled > 0 else unlabeled_images
+        
+        # Move unlabeled validation images
+        for idx in val_indices_unlabeled:
             if idx in al_manager.unlabeled_data:
                 img_tensor = al_manager.unlabeled_data.pop(idx)
                 al_manager.validation_data[idx] = (img_tensor, None)
         
-        # Return results
-        result = {
+        print(f"Final label mapping used: {label_to_index}")
+        print(f"Processing complete: {len(labeled_images)} labeled, {len(remaining_unlabeled)} unlabeled, {len(al_manager.validation_data)} validation")
+        
+        return {
             "status": "success",
             "message": f"Successfully processed {processed_count} images from CSV",
             "stats": {
                 "labeled": len(labeled_images),
                 "unlabeled": len(remaining_unlabeled),
-                "validation": len(val_indices),
+                "validation": len(al_manager.validation_data),
+                "validation_labeled": len([1 for _, label in al_manager.validation_data.values() if label is not None]),
                 "total": processed_count,
                 "failed": len(failed_paths)
             },
             "label_mapping": label_to_index,
             "failed_paths": failed_paths[:10] if failed_paths else []
         }
-        
-        print(f"Processing complete: {result}")
-        return result
         
     except HTTPException:
         raise

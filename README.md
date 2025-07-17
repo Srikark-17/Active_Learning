@@ -12,6 +12,13 @@ This is a React app that can be used to conduct Active Learning locally for imag
 4. Change directory to the `frontend` folder and run
    `yarn`
 
+### Docker Installation
+
+1. run `docker-compose up --build`
+
+For a development environment, run
+`docker-compose -f docker-compose-dev.yml up --build`
+
 ## Usage
 
 1. Change directory into the `backend` folder and run
