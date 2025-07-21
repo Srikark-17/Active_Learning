@@ -57,6 +57,12 @@ For a development environment, run
 - `entropy`: Chooses samples with highest entropy in their prediction probabilities, indicating maximum uncertainty across all classes
 - `diversity`: Selects samples that are most different from the currently labeled data in feature space, ensuring varied training examples
 
+## 📹 Tutorials
+
+[How to use the interface to train new projects](https://drive.google.com/file/d/1dtDrBBQPRXZywTzsXU5EPlulsMVBYJJn/view?usp=sharing)
+<br/>
+[How to use the interface to train on existing projects](https://drive.google.com/file/d/1CfGAvPtxM6MzqhX-xlBhI25CrwCqPEmu/view?usp=sharing)
+
 ## Questions
 
 Contact Srikar on Slack
