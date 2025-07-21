@@ -11,7 +11,7 @@ import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { RadioGroup, RadioGroupItem } from "../components/ui/radio-group";
-import { AlertCircle, Upload, Download, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, Download, Plus, Trash2 } from "lucide-react";
 import {
   Tabs,
   TabsContent,
@@ -28,14 +28,8 @@ import {
 import ImageLoader from "../components/imageLoader";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import activeLearnAPI from "../services/activelearning";
-import EnhancedMetricsDisplay from "@/components/enhancedMetricsDisplay";
 import AutomatedTrainingControls from "@/components/automatedTrainingControls";
-import {
-  ValidationProgress,
-  BatchProgress,
-  ModelPredictions,
-  ActiveLearningStatus,
-} from "@/components/components";
+import { BatchProgress, ActiveLearningStatus } from "@/components/components";
 import CheckpointControls from "@/components/checkpointControls";
 import PretrainedModelImport from "@/components/pretrainedModel";
 import ModelAdaptationControls from "@/components/modelAdaptationControls";
@@ -1532,14 +1526,6 @@ Possible solutions:
               </div>
             </TabsContent>
           </Tabs>
-          {/* In your metrics section */}
-          {(isRetraining || metrics?.episodeAccuracies?.length > 0) && (
-            <EnhancedMetricsDisplay
-              metrics={metrics}
-              episode_history={episodeHistory}
-              lr_history={lrHistory}
-            />
-          )}
         </div>
 
         {/* Right Column - Image Annotation */}
