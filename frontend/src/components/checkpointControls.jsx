@@ -10,10 +10,10 @@ import {
 
 function CheckpointControls({ onSave, onLoad, checkpoints }) {
   return (
-    <div className="space-y-4">
+    <div className="my-4">
       <Button onClick={onSave}>Save Checkpoint</Button>
 
-      <div>
+      <div className="mt-4">
         <Label>Export Checkpoint</Label>
         <Select disabled={checkpoints.length == 0} onValueChange={onLoad}>
           <SelectTrigger>

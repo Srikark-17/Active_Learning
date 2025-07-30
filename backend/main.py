@@ -10,7 +10,7 @@ import os
 import random
 from datetime import datetime
 import matplotlib.pyplot as plt
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal, List, Tuple
 import json
@@ -22,6 +22,11 @@ import shutil
 import tempfile
 import traceback
 from model_utils import safe_load_model
+import zipfile
+import tempfile
+import shutil
+import pandas as pd
+from datetime import datetime
 
 class ProjectInit(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
@@ -2163,47 +2168,166 @@ async def get_image(image_id: int):
         traceback.print_exc()  # Print full traceback
         raise HTTPException(status_code=500, detail=error_msg)
 
-@app.get("/export-model")
-async def export_model():
+@app.get("/export-project")
+async def export_project():
+    """Export complete project as ZIP file with model, data, and metadata"""
     try:
         if not al_manager.model:
             raise HTTPException(status_code=400, detail="No model initialized")
         
-        # Get current configuration
-        config = {
-            'sampling_strategy': automated_trainer.training_config['sampling_strategy'],
-            'epochs': automated_trainer.training_config['epochs'],
-            'batch_size': automated_trainer.training_config['batch_size'],
-            'learning_rate': automated_trainer.training_config['learning_rate']
-        }
+        print("Starting project export...")
         
-        model_export = {
-            'model_state': al_manager.model.state_dict(),
-            'model_config': {
-                'project_name': al_manager.project_name,
-                'episode': al_manager.episode,
-                'model_name': al_manager.model.__class__.__name__,
-                'training_config': config,  # Save full training config
-                'metrics': {
-                    'episode_accuracies': {
-                        'x': al_manager.plot_episode_xvalues,
-                        'y': al_manager.plot_episode_yvalues
-                    }
+        # Create ZIP file in memory
+        zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            print("Created ZIP buffer...")
+            
+            # 1. Export model
+            model_export = {
+                'model_state': al_manager.model.state_dict(),
+                'model_config': {
+                    'project_name': al_manager.project_name,
+                    'episode': al_manager.episode,
+                    'model_type': al_manager.model.__class__.__name__,
+                    'num_classes': al_manager.model.fc.out_features if hasattr(al_manager.model, 'fc') else 2,
+                    'best_val_acc': al_manager.best_val_acc,
                 }
             }
-        }
+            
+            # Save model to temporary bytes buffer
+            model_buffer = io.BytesIO()
+            torch.save(model_export, model_buffer)
+            model_buffer.seek(0)
+            zipf.writestr("model.pt", model_buffer.getvalue())
+            print("Added model to ZIP...")
+            
+            # 2. Create annotated CSV with ALL images and their paths
+            csv_data = []
+            
+            # Helper function to get original image path if available
+            def get_image_info(img_id, img_tensor, label, split_type):
+                # Try to get original file path - this would need to be stored during upload
+                # For now, we'll use the image_id as a placeholder
+                return {
+                    'image_id': img_id,
+                    'image_path': f"image_{img_id}.jpg",  # Placeholder - in real implementation, store actual paths
+                    'status': 'labeled' if label is not None else 'unlabeled',
+                    'label_index': label,
+                    'label_name': None,  # Will be filled below
+                    'split': split_type
+                }
+            
+            # Add labeled images
+            for img_id, (img_tensor, label) in al_manager.labeled_data.items():
+                csv_data.append(get_image_info(img_id, img_tensor, label, 'train'))
+            
+            # Add unlabeled images
+            for img_id, img_tensor in al_manager.unlabeled_data.items():
+                csv_data.append(get_image_info(img_id, img_tensor, None, 'train'))
+            
+            # Add validation images
+            for img_id, (img_tensor, label) in al_manager.validation_data.items():
+                csv_data.append(get_image_info(img_id, img_tensor, label, 'validation'))
+            
+            # Save CSV
+            if csv_data:
+                df = pd.DataFrame(csv_data)
+                csv_buffer = io.StringIO()
+                df.to_csv(csv_buffer, index=False)
+                zipf.writestr("annotations.csv", csv_buffer.getvalue().encode('utf-8'))
+                print("Added CSV to ZIP...")
+            
+            # 3. Create comprehensive metadata
+            training_config = automated_trainer.training_config if 'automated_trainer' in globals() else {}
+            
+            # Get current labels from the frontend (you'll need to pass these)
+            current_labels = []
+            num_classes = al_manager.model.fc.out_features if hasattr(al_manager.model, 'fc') else 2
+            for i in range(num_classes):
+                current_labels.append(f"Class {i + 1}")  # Default labels
+            
+            metadata = {
+                'project_info': {
+                    'project_name': al_manager.project_name,
+                    'export_timestamp': datetime.now().isoformat(),
+                    'current_episode': al_manager.episode,
+                    'best_validation_accuracy': al_manager.best_val_acc,
+                    'model_type': al_manager.model.__class__.__name__,
+                    'num_classes': num_classes,
+                },
+                'labels': {
+                    'label_names': current_labels,
+                    'num_classes': len(current_labels)
+                },
+                'dataset_stats': {
+                    'total_images': len(al_manager.labeled_data) + len(al_manager.unlabeled_data) + len(al_manager.validation_data),
+                    'labeled_images': len(al_manager.labeled_data),
+                    'unlabeled_images': len(al_manager.unlabeled_data),
+                    'validation_images': len(al_manager.validation_data),
+                    'validation_labeled': len([1 for _, label in al_manager.validation_data.values() if label is not None]),
+                },
+                'hyperparameters': {
+                    'sampling_strategy': training_config.get('sampling_strategy', 'unknown'),
+                    'batch_size': training_config.get('batch_size', 'unknown'),
+                    'epochs': training_config.get('epochs', 'unknown'),
+                    'learning_rate': training_config.get('learning_rate', 'unknown'),
+                    'validation_split': al_manager.config.get('val_split', 0.2),
+                    'initial_labeled_ratio': al_manager.config.get('initial_labeled_ratio', 0.1),
+                },
+                'training_metrics': {
+                    'episode_accuracies': {
+                        'episodes': al_manager.plot_episode_xvalues,
+                        'accuracies': al_manager.plot_episode_yvalues
+                    },
+                    'epoch_losses': {
+                        'epochs': al_manager.plot_epoch_xvalues,
+                        'losses': al_manager.plot_epoch_yvalues
+                    },
+                    'episode_history': al_manager.episode_history
+                },
+                'episode_breakdown': []
+            }
+            
+            # Add episode breakdown with detailed stats
+            for i, episode_data in enumerate(al_manager.episode_history):
+                episode_info = {
+                    'episode': i + 1,
+                    'strategy_used': episode_data.get('strategy', 'unknown'),
+                    'batch_size': episode_data.get('batch_size', 'unknown'),
+                    'images_labeled_this_episode': episode_data.get('batch_size', 0),
+                    'total_labeled_after_episode': episode_data.get('labeled_size', 0),
+                    'validation_accuracy': episode_data.get('best_val_acc', 0),
+                    'learning_rate': episode_data.get('learning_rate', 'unknown')
+                }
+                metadata['episode_breakdown'].append(episode_info)
+            
+            # Save metadata to ZIP
+            metadata_json = json.dumps(metadata, indent=2)
+            zipf.writestr("metadata.json", metadata_json.encode('utf-8'))
+            print("Added metadata to ZIP...")
         
-        filename = f"{al_manager.project_name}_{config['sampling_strategy']}_e{config['epochs']}_b{config['batch_size']}_model.pt"
-        export_path = os.path.join(al_manager.output_dir, filename)
-        torch.save(model_export, export_path)
+        # Prepare the ZIP file for download
+        zip_buffer.seek(0)
+        zip_content = zip_buffer.getvalue()
+        zip_filename = f"{al_manager.project_name}_project_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         
-        return FileResponse(
-            path=export_path,
-            filename=filename,
-            media_type="application/octet-stream"
+        print(f"ZIP file created successfully. Size: {len(zip_content)} bytes")
+        
+        # Return as streaming response
+        return Response(
+            content=zip_content,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename={zip_filename}",
+                "Content-Length": str(len(zip_content))
+            }
         )
         
     except Exception as e:
+        print(f"Error exporting project: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/import-model")
@@ -3578,6 +3702,148 @@ async def recover_batch(request: BatchRequest):
     except Exception as e:
         print(f"Error in recover_batch: {str(e)}")
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/import-project")
+async def import_project(uploaded_file: UploadFile = File(...)):
+    """Import a complete project from ZIP file and prepare for continuation"""
+    try:
+        # Read ZIP file
+        content = await uploaded_file.read()
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Save ZIP file temporarily
+            zip_path = os.path.join(temp_dir, "imported_project.zip")
+            with open(zip_path, "wb") as f:
+                f.write(content)
+            
+            # Extract ZIP file
+            extract_dir = os.path.join(temp_dir, "extracted")
+            with zipfile.ZipFile(zip_path, 'r') as zipf:
+                zipf.extractall(extract_dir)
+            
+            # Find the project files
+            project_files = {}
+            for root, dirs, files in os.walk(extract_dir):
+                for file in files:
+                    if file in ['model.pt', 'annotations.csv', 'metadata.json']:
+                        project_files[file] = os.path.join(root, file)
+            
+            # Validate required files
+            required_files = ['model.pt', 'metadata.json']
+            missing_files = [f for f in required_files if f not in project_files]
+            if missing_files:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Missing required files: {missing_files}"
+                )
+            
+            # Load metadata
+            with open(project_files['metadata.json'], 'r') as f:
+                metadata = json.load(f)
+            
+            project_info = metadata['project_info']
+            dataset_stats = metadata['dataset_stats']
+            hyperparameters = metadata['hyperparameters']
+            training_metrics = metadata['training_metrics']
+            labels_info = metadata.get('labels', {})
+            
+            # Initialize project with imported settings
+            al_manager.project_name = project_info['project_name']
+            al_manager.episode = project_info['current_episode']
+            al_manager.best_val_acc = project_info['best_validation_accuracy']
+            
+            # Update config
+            al_manager.config.update({
+                'val_split': hyperparameters.get('validation_split', 0.2),
+                'initial_labeled_ratio': hyperparameters.get('initial_labeled_ratio', 0.1),
+            })
+            
+            # Load model
+            if torch.cuda.is_available():
+                model_data = torch.load(project_files['model.pt'])
+            else:
+                model_data = torch.load(project_files['model.pt'], map_location=torch.device('cpu'))
+            
+            model_config = model_data['model_config']
+            
+            # Initialize model architecture
+            num_classes = model_config.get('num_classes', project_info.get('num_classes', 2))
+            model_type = project_info.get('model_type', 'ResNet').lower()
+            
+            # Map model type names
+            if 'resnet' in model_type:
+                if '18' in model_type:
+                    model_name = 'resnet18'
+                else:
+                    model_name = 'resnet50'
+            else:
+                model_name = 'resnet50'  # Default fallback
+            
+            # Initialize the model
+            init_result = al_manager.initialize_project(
+                project_name=al_manager.project_name,
+                model_name=model_name,
+                num_classes=num_classes
+            )
+            
+            # Load model weights
+            al_manager.model.load_state_dict(model_data['model_state'])
+            
+            # Restore training metrics
+            al_manager.plot_episode_xvalues = training_metrics['episode_accuracies']['episodes']
+            al_manager.plot_episode_yvalues = training_metrics['episode_accuracies']['accuracies']
+            al_manager.plot_epoch_xvalues = training_metrics['epoch_losses']['epochs']
+            al_manager.plot_epoch_yvalues = training_metrics['epoch_losses']['losses']
+            al_manager.episode_history = training_metrics.get('episode_history', [])
+            
+            # Update automated trainer config
+            if 'automated_trainer' in globals():
+                automated_trainer.training_config.update({
+                    'sampling_strategy': hyperparameters.get('sampling_strategy', 'least_confidence'),
+                    'epochs': hyperparameters.get('epochs', 10),
+                    'batch_size': hyperparameters.get('batch_size', 32),
+                    'learning_rate': hyperparameters.get('learning_rate', 0.001)
+                })
+            
+            # Clear existing data sets - we're starting fresh with new images
+            al_manager.labeled_data.clear()
+            al_manager.unlabeled_data.clear()
+            al_manager.validation_data.clear()
+            
+            # Create output directory
+            al_manager.output_dir = os.path.join("output", al_manager.project_name, 
+                datetime.now().strftime("%Y%m%d_%H%M%S"))
+            os.makedirs(al_manager.output_dir, exist_ok=True)
+            
+            return {
+                "status": "success",
+                "project_info": project_info,
+                "dataset_stats": dataset_stats,
+                "hyperparameters": hyperparameters,
+                "labels": labels_info,
+                "training_config": automated_trainer.training_config if 'automated_trainer' in globals() else {},
+                "model_ready": True,
+                "message": f"Project '{al_manager.project_name}' imported successfully. Upload new images to continue training with the existing model."
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error importing project: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to import project: {str(e)}")
+
+@app.post("/update-project-labels")
+async def update_project_labels(request: dict):
+    """Update the current project labels"""
+    try:
+        labels = request.get('labels', [])
+        # Store labels in the al_manager for export
+        al_manager.current_labels = labels
+        return {"status": "success", "labels": labels}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")

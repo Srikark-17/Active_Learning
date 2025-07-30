@@ -31,6 +31,7 @@ import activeLearnAPI from "../services/activelearning";
 import AutomatedTrainingControls from "@/components/automatedTrainingControls";
 import { BatchProgress, ActiveLearningStatus } from "@/components/components";
 import CheckpointControls from "@/components/checkpointControls";
+import ProjectImport from "@/components/projectImport";
 import PretrainedModelImport from "@/components/pretrainedModel";
 import ModelAdaptationControls from "@/components/modelAdaptationControls";
 
@@ -52,6 +53,7 @@ const ActiveLearningUI = () => {
   const [selectedLabel, setSelectedLabel] = useState("");
   const [isRetraining, setIsRetraining] = useState(false);
   const [labels, setLabels] = useState([]);
+  const [projectType, setProjectType] = useState("new");
   const [isBatchInProgress, setIsBatchInProgress] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -60,6 +62,7 @@ const ActiveLearningUI = () => {
   const [initialLabeledRatio, setInitialLabeledRatio] = useState(0.4);
   const [trainingMetrics, setTrainingMetrics] = useState(null);
   const [automatedStatus, setAutomatedStatus] = useState(null);
+  const [modelLoaded, setModelLoaded] = useState(false);
   const [isProjectFullyInitialized, setIsProjectFullyInitialized] =
     useState(null);
   const [epochs, setEpochs] = useState(10);
@@ -624,6 +627,7 @@ const ActiveLearningUI = () => {
       setIsLoading(true);
       setImageLoadError(null);
 
+      // Initialize project if not already done (for imported projects, this is already done)
       if (!isInitialized) {
         console.log("Initializing new project...");
         const initResult = await activeLearnAPI.initializeProject({
@@ -639,9 +643,7 @@ const ActiveLearningUI = () => {
         });
         setIsInitialized(true);
       } else {
-        console.log(
-          "Project already initialized with pretrained model, processing data only..."
-        );
+        console.log("Using imported project model...");
       }
 
       // Handle CSV with labels using the ref
@@ -650,15 +652,7 @@ const ActiveLearningUI = () => {
           `Processing CSV with annotations (using column: ${fileDataRef.current.labelColumn})...`
         );
 
-        // Get the actual File object from the ref
         const csvFile = fileDataRef.current.csvFile;
-
-        console.log("Processing CSV file:", {
-          name: csvFile?.name,
-          type: csvFile?.type,
-          size: csvFile?.size,
-          isFile: csvFile instanceof File,
-        });
 
         if (!csvFile || !(csvFile instanceof File)) {
           throw new Error("CSV file object is not valid");
@@ -670,38 +664,14 @@ const ActiveLearningUI = () => {
           expectedLabelMapping[label] = index;
         });
 
-        console.log("Frontend labels:", labels);
-        console.log("Expected label mapping:", expectedLabelMapping);
-
         const result = await activeLearnAPI.uploadCSVPathsWithLabels(
           csvFile,
           fileDataRef.current.labelColumn,
           fileDataRef.current.delimiter || ",",
           valSplit,
           initialLabeledRatio,
-          expectedLabelMapping // Pass the expected mapping!
+          expectedLabelMapping
         );
-
-        console.log("CSV with annotations processed:", result);
-
-        // Verify the mapping and don't overwrite frontend labels
-        if (result.label_mapping) {
-          console.log("Backend created mapping:", result.label_mapping);
-
-          // Check if they match
-          const mappingMatches = Object.keys(expectedLabelMapping).every(
-            (label) =>
-              result.label_mapping[label] === expectedLabelMapping[label]
-          );
-
-          if (!mappingMatches) {
-            console.warn("Label mapping mismatch detected!");
-            console.warn("Expected:", expectedLabelMapping);
-            console.warn("Got:", result.label_mapping);
-          } else {
-            console.log("Label mappings match correctly!");
-          }
-        }
 
         setImageLoadError(
           `Successfully loaded ${result.stats.total} images (${result.stats.labeled} with labels, ${result.stats.unlabeled} unlabeled, ${result.stats.validation} for validation)`
@@ -715,28 +685,14 @@ const ActiveLearningUI = () => {
               epochs,
               batchSize
             );
-            console.log("Initial training result:", episodeResult);
             if (episodeResult.final_val_acc) {
               setValidationAccuracy(episodeResult.final_val_acc);
             }
-            setImageLoadError(
-              "Initial training complete - Starting active learning"
-            );
+            setImageLoadError("Initial training complete");
           } catch (error) {
             console.error("Initial training error:", error);
             setImageLoadError("Initial training error: " + error.message);
           }
-        }
-
-        // Get first batch for active learning
-        try {
-          await getNextBatch();
-          setImageLoadError("Ready for active learning");
-        } catch (batchError) {
-          console.error("Error getting first batch:", batchError);
-          setImageLoadError(
-            "Warning: Could not get first batch - " + batchError.message
-          );
         }
       }
       // Handle combined upload with labels
@@ -750,7 +706,6 @@ const ActiveLearningUI = () => {
           valSplit,
           initialLabeledRatio
         );
-        console.log("CSV with labels processed:", result);
 
         // Update labels from label mapping if needed
         if (result.label_mapping) {
@@ -785,7 +740,6 @@ const ActiveLearningUI = () => {
               epochs,
               batchSize
             );
-            console.log("Initial training result:", episodeResult);
             if (episodeResult.final_val_acc) {
               setValidationAccuracy(episodeResult.final_val_acc);
             }
@@ -794,17 +748,6 @@ const ActiveLearningUI = () => {
             console.error("Initial training error:", error);
             setImageLoadError("Initial training error: " + error.message);
           }
-        }
-
-        // Get batch for active learning
-        try {
-          await getNextBatch();
-          setImageLoadError("Ready for active learning");
-        } catch (batchError) {
-          console.error("Error getting batch:", batchError);
-          setImageLoadError(
-            "Warning: Could not get batch - " + batchError.message
-          );
         }
       }
       // Handle combined upload without labels
@@ -815,20 +758,9 @@ const ActiveLearningUI = () => {
           valSplit,
           initialLabeledRatio
         );
-        console.log("Combined upload processed:", result);
         setImageLoadError(
           `Successfully processed ${result.split_info.total_images} images`
         );
-
-        try {
-          await getNextBatch();
-          setImageLoadError("Ready for active learning");
-        } catch (batchError) {
-          console.error("Error getting batch:", batchError);
-          setImageLoadError(
-            "Warning: Could not get batch - " + batchError.message
-          );
-        }
       }
       // Handle CSV-only upload
       else if (loadedImages.type === "csv") {
@@ -844,20 +776,9 @@ const ActiveLearningUI = () => {
             valSplit,
             initialLabeledRatio
           );
-          console.log("CSV processing result:", result);
           setImageLoadError(
             `Successfully loaded ${result.split_info.total_images} images from CSV`
           );
-
-          try {
-            await getNextBatch();
-            setImageLoadError("Ready for active learning");
-          } catch (batchError) {
-            console.error("Error getting batch:", batchError);
-            setImageLoadError(
-              "Warning: Could not get batch - " + batchError.message
-            );
-          }
         } catch (error) {
           console.error("CSV upload error:", error);
           setImageLoadError(
@@ -872,17 +793,32 @@ const ActiveLearningUI = () => {
           valSplit,
           initialLabeledRatio
         );
-        console.log("Data split result:", result);
+        setImageLoadError(
+          `Successfully processed ${
+            result.split_info?.total_images || loadedImages.length
+          } images`
+        );
+      }
 
-        try {
-          await getNextBatch();
-          setImageLoadError("Ready for active learning");
-        } catch (batchError) {
-          console.error("Error getting batch:", batchError);
-          setImageLoadError(
-            "Warning: Could not get batch - " + batchError.message
-          );
-        }
+      // **NEW: Automatically get first batch after processing images**
+      setImageLoadError(
+        "Processing complete. Getting first batch for active learning..."
+      );
+
+      try {
+        await getNextBatch();
+        setImageLoadError(
+          `Ready for active learning! ${
+            validationAccuracy
+              ? `Model accuracy: ${validationAccuracy.toFixed(2)}%. `
+              : ""
+          }Start labeling images.`
+        );
+      } catch (batchError) {
+        console.error("Error getting first batch:", batchError);
+        setImageLoadError(
+          "Images processed successfully, but couldn't get first batch. Try clicking 'Start New Batch' in the status section."
+        );
       }
 
       setIsProjectFullyInitialized(true);
@@ -1016,11 +952,6 @@ Possible solutions:
     }
   };
 
-  console.log("loadedImages:", loadedImages);
-  console.log("loadedImages type:", typeof loadedImages);
-  console.log("loadedImages.length:", loadedImages?.length);
-  console.log("loadedImages.fileCount:", loadedImages?.fileCount);
-
   const handleSaveCheckpoint = async () => {
     try {
       setImageLoadError("Saving checkpoint...");
@@ -1123,12 +1054,53 @@ Possible solutions:
     return false;
   };
 
+  // Add this function to auto-start batching
+  const handleAutoStartBatch = async () => {
+    if (isInitialized && !isRetraining && currentBatch.length === 0) {
+      try {
+        setImageLoadError("Automatically loading next batch...");
+        await getNextBatch();
+        setImageLoadError(
+          `New batch loaded! Ready to continue active learning.`
+        );
+      } catch (error) {
+        console.error("Auto-batch loading failed:", error);
+        setImageLoadError(
+          "Couldn't automatically load batch. Try manual batch loading."
+        );
+      }
+    }
+  };
+
+  // Use this effect to auto-start batching when conditions are right
+  useEffect(() => {
+    if (
+      isProjectFullyInitialized &&
+      currentBatch.length === 0 &&
+      !isRetraining
+    ) {
+      const timer = setTimeout(() => {
+        handleAutoStartBatch();
+      }, 1000); // Small delay to ensure everything is ready
+
+      return () => clearTimeout(timer);
+    }
+  }, [isProjectFullyInitialized, currentBatch.length, isRetraining]);
+
   return (
     <>
       <div className="flex px-5 pt-5 pb-3 h-1/6 items-center justify-between">
-        <div className="flex items-center gap-4 w-1/4">
-          <img src="hms.png" alt="Harvard Medical School Logo" />
-          <img src="meei.jpg" alt="Mass Eye and Ear Institute Logo" />
+        <div className="flex items-center gap-4 h-20 w-fit">
+          <img
+            className="h-20"
+            src="hms.png"
+            alt="Harvard Medical School Logo"
+          />
+          <img
+            className="h-16"
+            src="meei.jpg"
+            alt="Mass Eye and Ear Institute Logo"
+          />
         </div>
       </div>
       <div className="container mx-auto p-6">
@@ -1151,275 +1123,621 @@ Possible solutions:
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-6">
-                      <div>
-                        <Label htmlFor="project-name">Project Name</Label>
-                        <Input
-                          id="project-name"
-                          value={projectName}
-                          onChange={(e) => setProjectName(e.target.value)}
-                          className="mt-1"
-                          disabled={isInitialized}
-                          placeholder="Enter project name"
-                        />
-                      </div>
-
-                      <div>
-                        <Label>Model Selection</Label>
-                        <Select
-                          value={selectedModel}
-                          onValueChange={setSelectedModel}
-                          disabled={isInitialized}
+                      <div className="space-y-3">
+                        <RadioGroup
+                          value={projectType}
+                          onValueChange={setProjectType}
+                          className="flex gap-6"
                         >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select model" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="resnet18">ResNet18</SelectItem>
-                            <SelectItem value="resnet50">ResNet50</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      {/* Label Management */}
-                      <div>
-                        <Label>Labels</Label>
-                        {labels.map((label, index) => (
-                          <div key={index} className="flex gap-2 mt-2">
-                            <Input
-                              value={label}
-                              onChange={(e) =>
-                                handleLabelChange(index, e.target.value)
-                              }
-                              placeholder={`Label ${index + 1}`}
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="new" id="new-model" />
+                            <Label htmlFor="new-model">Create New Model</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem
+                              value="pretrained"
+                              id="pretrained-model"
                             />
-                            {labels.length > 1 && (
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                onClick={() => handleRemoveLabel(index)}
+                            <Label htmlFor="pretrained-model">
+                              Import Pretrained Model
+                            </Label>
+                          </div>
+                        </RadioGroup>
+                      </div>
+                      {projectType === "new" ? (
+                        <>
+                          {/* New Model Configuration */}
+                          <div>
+                            <Label htmlFor="project-name">Project Name</Label>
+                            <Input
+                              id="project-name"
+                              value={projectName}
+                              onChange={(e) => setProjectName(e.target.value)}
+                              className="mt-1"
+                              disabled={isInitialized}
+                              placeholder="Enter project name"
+                            />
+                          </div>
+
+                          <div>
+                            <Label>Model Selection</Label>
+                            <Select
+                              value={selectedModel}
+                              onValueChange={setSelectedModel}
+                              disabled={isInitialized}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select model" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="resnet18">
+                                  ResNet18
+                                </SelectItem>
+                                <SelectItem value="resnet50">
+                                  ResNet50
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          {/* Label Management */}
+                          <div>
+                            <Label>Labels</Label>
+                            {labels.map((label, index) => (
+                              <div key={index} className="flex gap-2 mt-2">
+                                <Input
+                                  value={label}
+                                  onChange={(e) =>
+                                    handleLabelChange(index, e.target.value)
+                                  }
+                                  placeholder={`Label ${index + 1}`}
+                                />
+                                {labels.length > 1 && (
+                                  <Button
+                                    variant="outline"
+                                    size="icon"
+                                    onClick={() => handleRemoveLabel(index)}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                )}
+                              </div>
+                            ))}
+                            <Button
+                              variant="outline"
+                              onClick={handleAddLabel}
+                              className="w-full mt-2"
+                            >
+                              <Plus className="h-4 w-4 mr-2" />
+                              Add Label
+                            </Button>
+                          </div>
+
+                          {/* Sampling Strategy Controls */}
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label>Sampling Strategy</Label>
+                              <Select
+                                value={samplingStrategy}
+                                onValueChange={setSamplingStrategy}
+                                disabled={batchStats.completed > 0}
                               >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            )}
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select strategy" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="least_confidence">
+                                    Least Confidence
+                                  </SelectItem>
+                                  <SelectItem value="margin">
+                                    Margin Sampling
+                                  </SelectItem>
+                                  <SelectItem value="entropy">
+                                    Entropy
+                                  </SelectItem>
+                                  <SelectItem value="diversity">
+                                    Diversity-based
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Learning Rate Strategy</Label>
+                              <Select
+                                value={lrConfig.strategy}
+                                onValueChange={(value) =>
+                                  setLrConfig((prev) => ({
+                                    ...prev,
+                                    strategy: value,
+                                  }))
+                                }
+                                disabled={isRetraining}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select LR strategy" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="plateau">
+                                    Reduce on Plateau
+                                  </SelectItem>
+                                  <SelectItem value="cosine">
+                                    Cosine Annealing
+                                  </SelectItem>
+                                  <SelectItem value="warmup">
+                                    One Cycle with Warmup
+                                  </SelectItem>
+                                  <SelectItem value="step">
+                                    Step Decay
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+
+                              <Label>Initial Learning Rate</Label>
+                              <Input
+                                type="number"
+                                value={lrConfig.initial_lr}
+                                onChange={(e) =>
+                                  setLrConfig((prev) => ({
+                                    ...prev,
+                                    initial_lr: parseFloat(e.target.value),
+                                  }))
+                                }
+                                min={0.0001}
+                                max={0.1}
+                                step={0.0001}
+                                disabled={isRetraining}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Batch Size</Label>
+                              <Input
+                                type="number"
+                                value={batchSize}
+                                onChange={(e) => {
+                                  const newBatchSize = Number(e.target.value);
+                                  setBatchSize(newBatchSize);
+                                  setBatchStats((prev) => ({
+                                    ...prev,
+                                    totalImages: newBatchSize,
+                                    remaining: newBatchSize,
+                                  }));
+                                }}
+                                min={1}
+                                max={100}
+                                disabled={
+                                  isRetraining || batchStats.completed > 0
+                                }
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Epochs</Label>
+                              <Input
+                                type="number"
+                                value={epochs}
+                                onChange={(e) => {
+                                  const newEpochs = Number(e.target.value);
+                                  setEpochs(newEpochs);
+                                }}
+                                min={10}
+                                disabled={isRetraining}
+                              />
+                            </div>
                           </div>
-                        ))}
-                        <Button
-                          variant="outline"
-                          onClick={handleAddLabel}
-                          className="w-full mt-2"
-                        >
-                          <Plus className="h-4 w-4 mr-2" />
-                          Add Label
-                        </Button>
-                      </div>
 
-                      {/* Sampling Strategy Controls */}
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <Label>Sampling Strategy</Label>
-                          <Select
-                            value={samplingStrategy}
-                            onValueChange={setSamplingStrategy}
-                            disabled={batchStats.completed > 0} // Only disable during training or mid-batch
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select strategy" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="least_confidence">
-                                Least Confidence
-                              </SelectItem>
-                              <SelectItem value="margin">
-                                Margin Sampling
-                              </SelectItem>
-                              <SelectItem value="entropy">Entropy</SelectItem>
-                              <SelectItem value="diversity">
-                                Diversity-based
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Learning Rate Strategy</Label>
-                          <Select
-                            value={lrConfig.strategy}
-                            onValueChange={(value) =>
-                              setLrConfig((prev) => ({
-                                ...prev,
-                                strategy: value,
-                              }))
-                            }
-                            disabled={isRetraining}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select LR strategy" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="plateau">
-                                Reduce on Plateau
-                              </SelectItem>
-                              <SelectItem value="cosine">
-                                Cosine Annealing
-                              </SelectItem>
-                              <SelectItem value="warmup">
-                                One Cycle with Warmup
-                              </SelectItem>
-                              <SelectItem value="step">Step Decay</SelectItem>
-                            </SelectContent>
-                          </Select>
-
-                          <Label>Initial Learning Rate</Label>
-                          <Input
-                            type="number"
-                            value={lrConfig.initial_lr}
-                            onChange={(e) =>
-                              setLrConfig((prev) => ({
-                                ...prev,
-                                initial_lr: parseFloat(e.target.value),
-                              }))
-                            }
-                            min={0.0001}
-                            max={0.1}
-                            step={0.0001}
-                            disabled={isRetraining}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Batch Size</Label>
-                          <Input
-                            type="number"
-                            value={batchSize}
-                            onChange={(e) => {
-                              const newBatchSize = Number(e.target.value);
-                              setBatchSize(newBatchSize);
-                              setBatchStats((prev) => ({
-                                ...prev,
-                                totalImages: newBatchSize,
-                                remaining: newBatchSize,
-                              }));
-                            }}
-                            min={1}
-                            max={100}
-                            disabled={isRetraining || batchStats.completed > 0} // Only disable during training or mid-batch
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Epochs</Label>
-                          <Input
-                            type="number"
-                            value={epochs}
-                            onChange={(e) => {
-                              const newEpochs = Number(e.target.value);
-                              setEpochs(newEpochs);
-                            }}
-                            min={10}
-                            disabled={isRetraining} // Only disable during training
-                          />
-                        </div>
-                      </div>
-
-                      {/* Data Split Configuration */}
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <Label>Validation Split</Label>
-                          <div className="flex items-center space-x-2">
-                            <Input
-                              type="range"
-                              min="0.1"
-                              max="0.3"
-                              step="0.05"
-                              value={valSplit}
-                              onChange={(e) =>
-                                setValSplit(parseFloat(e.target.value))
-                              }
-                              className="flex-1"
-                            />
-                            <span className="text-sm w-16 text-right">
-                              {(valSplit * 100).toFixed(0)}%
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label>Initial Labeled Ratio</Label>
-                          <div className="flex items-center space-x-2">
-                            <Input
-                              type="range"
-                              min="0.1"
-                              max="0.8"
-                              step="0.05"
-                              value={initialLabeledRatio}
-                              onChange={(e) =>
-                                setInitialLabeledRatio(
-                                  parseFloat(e.target.value)
-                                )
-                              }
-                              className="flex-1"
-                            />
-                            <span className="text-sm w-16 text-right">
-                              {(initialLabeledRatio * 100).toFixed(0)}%
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {loadedImages.length > 0 && (
-                        <div className="text-sm text-gray-600">
-                          Loaded {loadedImages.length} images
-                        </div>
-                      )}
-
-                      {loadedImages.length > 0 && (
-                        <Card className="bg-secondary/50">
-                          <CardContent className="pt-4">
-                            <h4 className="font-medium mb-2">
-                              Data Split Preview
-                            </h4>
-                            <div className="space-y-1 text-sm">
-                              <div className="flex justify-between">
-                                <span>Total Images:</span>
-                                <span>{loadedImages.length}</span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Validation Set:</span>
-                                <span>
-                                  {Math.round(loadedImages.length * valSplit)}{" "}
-                                  images
-                                </span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Initial Labeled Set:</span>
-                                <span>
-                                  {Math.round(
-                                    loadedImages.length *
-                                      (1 - valSplit) *
-                                      initialLabeledRatio
-                                  )}{" "}
-                                  images
-                                </span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span>Remaining Unlabeled:</span>
-                                <span>
-                                  {loadedImages.length -
-                                    Math.round(loadedImages.length * valSplit) -
-                                    Math.round(
-                                      loadedImages.length *
-                                        (1 - valSplit) *
-                                        initialLabeledRatio
-                                    )}{" "}
-                                  images
+                          {/* Data Split Configuration */}
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label>Validation Split</Label>
+                              <div className="flex items-center space-x-2">
+                                <Input
+                                  type="range"
+                                  min="0.1"
+                                  max="0.3"
+                                  step="0.05"
+                                  value={valSplit}
+                                  onChange={(e) =>
+                                    setValSplit(parseFloat(e.target.value))
+                                  }
+                                  className="flex-1"
+                                />
+                                <span className="text-sm w-16 text-right">
+                                  {(valSplit * 100).toFixed(0)}%
                                 </span>
                               </div>
                             </div>
-                          </CardContent>
-                        </Card>
-                      )}
 
-                      <ImageLoader
-                        onImagesLoaded={handleImagesLoaded}
-                        onError={setImageLoadError}
-                      />
+                            <div className="space-y-2">
+                              <Label>Initial Labeled Ratio</Label>
+                              <div className="flex items-center space-x-2">
+                                <Input
+                                  type="range"
+                                  min="0.1"
+                                  max="0.8"
+                                  step="0.05"
+                                  value={initialLabeledRatio}
+                                  onChange={(e) =>
+                                    setInitialLabeledRatio(
+                                      parseFloat(e.target.value)
+                                    )
+                                  }
+                                  className="flex-1"
+                                />
+                                <span className="text-sm w-16 text-right">
+                                  {(initialLabeledRatio * 100).toFixed(0)}%
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Data Split Preview */}
+                          {loadedImages.length > 0 && (
+                            <Card className="bg-secondary/50">
+                              <CardContent className="pt-4">
+                                <h4 className="font-medium mb-2">
+                                  Data Split Preview
+                                </h4>
+                                <div className="space-y-1 text-sm">
+                                  <div className="flex justify-between">
+                                    <span>Total Images:</span>
+                                    <span>{loadedImages.length}</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span>Validation Set:</span>
+                                    <span>
+                                      {Math.round(
+                                        loadedImages.length * valSplit
+                                      )}{" "}
+                                      images
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span>Initial Labeled Set:</span>
+                                    <span>
+                                      {Math.round(
+                                        loadedImages.length *
+                                          (1 - valSplit) *
+                                          initialLabeledRatio
+                                      )}{" "}
+                                      images
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span>Remaining Unlabeled:</span>
+                                    <span>
+                                      {loadedImages.length -
+                                        Math.round(
+                                          loadedImages.length * valSplit
+                                        ) -
+                                        Math.round(
+                                          loadedImages.length *
+                                            (1 - valSplit) *
+                                            initialLabeledRatio
+                                        )}{" "}
+                                      images
+                                    </span>
+                                  </div>
+                                </div>
+                              </CardContent>
+                            </Card>
+                          )}
+
+                          <ImageLoader
+                            onImagesLoaded={handleImagesLoaded}
+                            onError={setImageLoadError}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          {/* Pretrained Model Import */}
+                          <PretrainedModelImport
+                            onImportSuccess={(result) => {
+                              setProjectName(result.project_info.project_name);
+                              setSelectedModel(
+                                result.project_info.model_type || "resnet50"
+                              );
+                              setIsInitialized(true);
+
+                              // Restore labels from imported project
+                              if (result.labels && result.labels.label_names) {
+                                setLabels(result.labels.label_names);
+                                console.log(
+                                  "Restored labels:",
+                                  result.labels.label_names
+                                );
+                              }
+
+                              // Update hyperparameters from imported project
+                              if (result.hyperparameters) {
+                                setSamplingStrategy(
+                                  result.hyperparameters.sampling_strategy ||
+                                    "least_confidence"
+                                );
+                                setBatchSize(
+                                  result.hyperparameters.batch_size || 32
+                                );
+                                setEpochs(result.hyperparameters.epochs || 10);
+                                setValSplit(
+                                  result.hyperparameters.validation_split || 0.2
+                                );
+                                setInitialLabeledRatio(
+                                  result.hyperparameters
+                                    .initial_labeled_ratio || 0.1
+                                );
+                              }
+
+                              // Update metrics if available
+                              if (result.project_info) {
+                                setValidationAccuracy(
+                                  result.project_info
+                                    .best_validation_accuracy || 0
+                                );
+                              }
+
+                              setImageLoadError(
+                                `Project imported successfully! Model loaded with ${
+                                  result.project_info.best_validation_accuracy?.toFixed(
+                                    2
+                                  ) || 0
+                                }% accuracy. Upload new images to continue training.`
+                              );
+
+                              // Fetch current state
+                              activeLearnAPI
+                                .getStatus()
+                                .then((status) => {
+                                  setStatus(status);
+                                })
+                                .catch(console.error);
+
+                              activeLearnAPI
+                                .getMetrics()
+                                .then((metrics) => {
+                                  setMetrics(metrics);
+                                })
+                                .catch(console.error);
+                            }}
+                            onError={(errorMsg) => {
+                              setImageLoadError(errorMsg);
+                            }}
+                          />
+
+                          {modelLoaded && (
+                            <>
+                              <ModelAdaptationControls
+                                onAdaptSuccess={(result) => {
+                                  setImageLoadError(
+                                    `Model adaptation successful using ${result.adaptation_type} strategy`
+                                  );
+                                }}
+                                onError={(errorMsg) => {
+                                  setImageLoadError(
+                                    `Adaptation error: ${errorMsg}`
+                                  );
+                                }}
+                                disabled={!isInitialized || isRetraining}
+                              />
+
+                              {/* Label Management for Pretrained Model */}
+                              <div>
+                                <Label>Labels</Label>
+                                <p className="text-sm text-gray-600 mb-2">
+                                  Adjust these labels to match your dataset
+                                  classes
+                                </p>
+                                {labels.map((label, index) => (
+                                  <div key={index} className="flex gap-2 mt-2">
+                                    <Input
+                                      value={label}
+                                      onChange={(e) =>
+                                        handleLabelChange(index, e.target.value)
+                                      }
+                                      placeholder={`Label ${index + 1}`}
+                                    />
+                                    {labels.length > 1 && (
+                                      <Button
+                                        variant="outline"
+                                        size="icon"
+                                        onClick={() => handleRemoveLabel(index)}
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </Button>
+                                    )}
+                                  </div>
+                                ))}
+                                <div className="flex gap-2 mt-2">
+                                  <Button
+                                    variant="outline"
+                                    onClick={handleAddLabel}
+                                    className="flex-1"
+                                  >
+                                    <Plus className="h-4 w-4 mr-2" />
+                                    Add Label
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {/* Hyperparameters for Pretrained Model */}
+                              <div className="space-y-4">
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div className="space-y-2">
+                                    <Label>Sampling Strategy</Label>
+                                    <Select
+                                      value={samplingStrategy}
+                                      onValueChange={setSamplingStrategy}
+                                      disabled={batchStats.completed > 0}
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue placeholder="Select strategy" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="least_confidence">
+                                          Least Confidence
+                                        </SelectItem>
+                                        <SelectItem value="margin">
+                                          Margin Sampling
+                                        </SelectItem>
+                                        <SelectItem value="entropy">
+                                          Entropy
+                                        </SelectItem>
+                                        <SelectItem value="diversity">
+                                          Diversity-based
+                                        </SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    <Label>Learning Rate Strategy</Label>
+                                    <Select
+                                      value={lrConfig.strategy}
+                                      onValueChange={(value) =>
+                                        setLrConfig((prev) => ({
+                                          ...prev,
+                                          strategy: value,
+                                        }))
+                                      }
+                                      disabled={isRetraining}
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue placeholder="Select LR strategy" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="plateau">
+                                          Reduce on Plateau
+                                        </SelectItem>
+                                        <SelectItem value="cosine">
+                                          Cosine Annealing
+                                        </SelectItem>
+                                        <SelectItem value="warmup">
+                                          One Cycle with Warmup
+                                        </SelectItem>
+                                        <SelectItem value="step">
+                                          Step Decay
+                                        </SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-4">
+                                  <div className="space-y-2">
+                                    <Label>Initial Learning Rate</Label>
+                                    <Input
+                                      type="number"
+                                      value={lrConfig.initial_lr}
+                                      onChange={(e) =>
+                                        setLrConfig((prev) => ({
+                                          ...prev,
+                                          initial_lr: parseFloat(
+                                            e.target.value
+                                          ),
+                                        }))
+                                      }
+                                      min={0.0001}
+                                      max={0.1}
+                                      step={0.0001}
+                                      disabled={isRetraining}
+                                    />
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    <Label>Batch Size</Label>
+                                    <Input
+                                      type="number"
+                                      value={batchSize}
+                                      onChange={(e) => {
+                                        const newBatchSize = Number(
+                                          e.target.value
+                                        );
+                                        setBatchSize(newBatchSize);
+                                        setBatchStats((prev) => ({
+                                          ...prev,
+                                          totalImages: newBatchSize,
+                                          remaining: newBatchSize,
+                                        }));
+                                      }}
+                                      min={1}
+                                      max={100}
+                                      disabled={
+                                        isRetraining || batchStats.completed > 0
+                                      }
+                                    />
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    <Label>Epochs</Label>
+                                    <Input
+                                      type="number"
+                                      value={epochs}
+                                      onChange={(e) => {
+                                        const newEpochs = Number(
+                                          e.target.value
+                                        );
+                                        setEpochs(newEpochs);
+                                      }}
+                                      min={5}
+                                      disabled={isRetraining}
+                                    />
+                                  </div>
+                                </div>
+
+                                {/* Data Split Configuration for Pretrained */}
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div className="space-y-2">
+                                    <Label>Validation Split</Label>
+                                    <div className="flex items-center space-x-2">
+                                      <Input
+                                        type="range"
+                                        min="0.1"
+                                        max="0.3"
+                                        step="0.05"
+                                        value={valSplit}
+                                        onChange={(e) =>
+                                          setValSplit(
+                                            parseFloat(e.target.value)
+                                          )
+                                        }
+                                        className="flex-1"
+                                      />
+                                      <span className="text-sm w-16 text-right">
+                                        {(valSplit * 100).toFixed(0)}%
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    <Label>Initial Labeled Ratio</Label>
+                                    <div className="flex items-center space-x-2">
+                                      <Input
+                                        type="range"
+                                        min="0.1"
+                                        max="0.8"
+                                        step="0.05"
+                                        value={initialLabeledRatio}
+                                        onChange={(e) =>
+                                          setInitialLabeledRatio(
+                                            parseFloat(e.target.value)
+                                          )
+                                        }
+                                        className="flex-1"
+                                      />
+                                      <span className="text-sm w-16 text-right">
+                                        {(initialLabeledRatio * 100).toFixed(0)}
+                                        %
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <ImageLoader
+                                onImagesLoaded={handleImagesLoaded}
+                                onError={setImageLoadError}
+                              />
+                            </>
+                          )}
+                        </>
+                      )}
 
                       {imageLoadError && (
                         <Alert variant="destructive">
@@ -1427,6 +1745,7 @@ Possible solutions:
                           <AlertDescription>{imageLoadError}</AlertDescription>
                         </Alert>
                       )}
+
                       <Button
                         className="w-full"
                         onClick={handleStartProject}
@@ -1434,7 +1753,7 @@ Possible solutions:
                           !projectName ||
                           labels.length === 0 ||
                           !hasLoadedFiles() ||
-                          isProjectFullyInitialized || // Only disable when fully initialized with data
+                          isProjectFullyInitialized ||
                           isLoading
                         }
                       >
@@ -1449,47 +1768,91 @@ Possible solutions:
                           onStart={handleStartAutomatedTraining}
                           onStop={handleStopAutomatedTraining}
                           status={automatedStatus}
-                          metrics={trainingMetrics} // Pass metrics to controls
+                          metrics={trainingMetrics}
                           disabled={!isInitialized}
                           episode_history={episodeHistory}
                         />
                       )}
+
                       <div>
                         <ActiveLearningStatus
                           status={status}
                           onStartNewBatch={handleStartNewBatch}
                         />
                       </div>
+
                       <CheckpointControls
                         onSave={handleSaveCheckpoint}
                         onLoad={handleLoadCheckpoint}
                         checkpoints={checkpoints}
                       />
+
                       <div className="space-y-4">
                         <div className="flex gap-4">
                           <Button
                             onClick={async () => {
                               try {
-                                const blob = await activeLearnAPI.exportModel();
+                                // First, send the current labels to the backend
+                                if (labels.length > 0) {
+                                  await activeLearnAPI.updateProjectLabels(
+                                    labels
+                                  );
+                                }
+
+                                const response = await fetch(
+                                  `http://localhost:8000/export-project`,
+                                  {
+                                    method: "GET",
+                                  }
+                                );
+
+                                if (!response.ok) {
+                                  throw new Error(
+                                    `Failed to export project: ${response.statusText}`
+                                  );
+                                }
+
+                                const blob = await response.blob();
                                 const url = window.URL.createObjectURL(blob);
                                 const a = document.createElement("a");
                                 a.href = url;
-                                // Update export filename with parameters
-                                const filename = `${projectName}_${samplingStrategy}_e${epochs}_b${batchSize}_model.pt`;
+
+                                const contentDisposition = response.headers.get(
+                                  "content-disposition"
+                                );
+                                let filename = `${projectName}_project_${new Date()
+                                  .toISOString()
+                                  .slice(0, 10)}.zip`;
+
+                                if (contentDisposition) {
+                                  const filenameMatch =
+                                    contentDisposition.match(
+                                      /filename="([^"]+)"/
+                                    );
+                                  if (filenameMatch) {
+                                    filename = filenameMatch[1];
+                                  }
+                                }
+
                                 a.download = filename;
                                 document.body.appendChild(a);
                                 a.click();
                                 window.URL.revokeObjectURL(url);
+                                document.body.removeChild(a);
+
+                                setImageLoadError(
+                                  "Project exported successfully!"
+                                );
                               } catch (error) {
                                 setImageLoadError(
-                                  "Failed to export model: " + error.message
+                                  "Failed to export project: " + error.message
                                 );
                               }
                             }}
-                            disabled={isBatchInProgress}
+                            disabled={!isInitialized || !projectName}
                           >
                             <Download className="h-4 w-4 mr-2" />
-                            Export Model
+                            Export Project
                           </Button>
                         </div>
                       </div>
@@ -1497,44 +1860,447 @@ Possible solutions:
                   </CardContent>
                 </Card>
               </TabsContent>
+
               <TabsContent value="import">
-                <div className="space-y-6">
-                  <PretrainedModelImport
-                    onImportSuccess={(result) => {
-                      setProjectName(result.project_name);
-                      setSelectedModel(result.model_type);
-                      setIsInitialized(true); // Keep this for ModelAdaptationControls
-                      setImageLoadError(
-                        "Pre-trained model imported successfully! Upload your data and click Start Project."
+                <ProjectImport
+                  onImportSuccess={(result) => {
+                    setProjectName(result.project_info.project_name);
+                    setSelectedModel(
+                      result.project_info.model_type || "resnet50"
+                    );
+                    setIsInitialized(true);
+
+                    // Restore labels from imported project
+                    if (result.labels && result.labels.label_names) {
+                      setLabels(result.labels.label_names);
+                    }
+
+                    // Update hyperparameters from imported project
+                    if (result.hyperparameters) {
+                      setSamplingStrategy(
+                        result.hyperparameters.sampling_strategy ||
+                          "least_confidence"
                       );
+                      setBatchSize(result.hyperparameters.batch_size || 32);
+                      setEpochs(result.hyperparameters.epochs || 10);
+                      setValSplit(
+                        result.hyperparameters.validation_split || 0.2
+                      );
+                      setInitialLabeledRatio(
+                        result.hyperparameters.initial_labeled_ratio || 0.1
+                      );
+                    }
 
-                      // Fetch any needed state updates
-                      activeLearnAPI.getStatus().then((status) => {
+                    // Update metrics if available
+                    if (result.project_info) {
+                      setValidationAccuracy(
+                        result.project_info.best_validation_accuracy || 0
+                      );
+                    }
+
+                    setImageLoadError(
+                      `Project imported successfully! Project: ${result.project_info.project_name}. Labels and settings restored.`
+                    );
+
+                    // Fetch current state
+                    activeLearnAPI
+                      .getStatus()
+                      .then((status) => {
                         setStatus(status);
-                      });
+                      })
+                      .catch(console.error);
 
-                      activeLearnAPI.getMetrics().then((metrics) => {
+                    activeLearnAPI
+                      .getMetrics()
+                      .then((metrics) => {
                         setMetrics(metrics);
-                      });
-                    }}
-                    onError={(errorMsg) => {
-                      setImageLoadError(errorMsg);
-                    }}
-                  />
-                  {isInitialized && (
-                    <ModelAdaptationControls
-                      onAdaptSuccess={(result) => {
-                        setImageLoadError(
-                          `Model adaptation successful using ${result.adaptation_type} strategy`
-                        );
-                      }}
-                      onError={(errorMsg) => {
-                        setImageLoadError(`Adaptation error: ${errorMsg}`);
-                      }}
-                      disabled={!isInitialized || isRetraining}
-                    />
-                  )}
-                </div>
+                      })
+                      .catch(console.error);
+                  }}
+                  onError={(errorMsg) => {
+                    setImageLoadError(errorMsg);
+                  }}
+                />
+
+                {/* Show full project controls after successful import */}
+                {isInitialized && (
+                  <Card className="mt-6">
+                    <CardHeader>
+                      <CardTitle>Imported Project Configuration</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-6">
+                        {/* Project Name - Read Only Display */}
+                        <div>
+                          <Label>Project Name</Label>
+                          <Input
+                            value={projectName}
+                            onChange={(e) => setProjectName(e.target.value)}
+                            className="mt-1"
+                            placeholder="Project name"
+                          />
+                        </div>
+
+                        {/* Model Info - Read Only Display */}
+                        <div>
+                          <Label>Model Type</Label>
+                          <Input
+                            value={selectedModel}
+                            readOnly
+                            className="mt-1 bg-gray-50"
+                          />
+                        </div>
+
+                        {/* Labels Management */}
+                        <div>
+                          <Label>Labels</Label>
+                          <p className="text-sm text-gray-600 mb-2">
+                            You can modify these labels for your dataset
+                          </p>
+                          {labels.map((label, index) => (
+                            <div key={index} className="flex gap-2 mt-2">
+                              <Input
+                                value={label}
+                                onChange={(e) =>
+                                  handleLabelChange(index, e.target.value)
+                                }
+                                placeholder={`Label ${index + 1}`}
+                              />
+                              {labels.length > 1 && (
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  onClick={() => handleRemoveLabel(index)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                            </div>
+                          ))}
+                          <div className="flex gap-2 mt-2">
+                            <Button
+                              variant="outline"
+                              onClick={handleAddLabel}
+                              className="flex-1"
+                            >
+                              <Plus className="h-4 w-4 mr-2" />
+                              Add Label
+                            </Button>
+                          </div>
+                        </div>
+
+                        {/* Hyperparameters */}
+                        <div className="space-y-4">
+                          <h4 className="text-lg font-medium">
+                            Training Parameters
+                          </h4>
+
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label>Sampling Strategy</Label>
+                              <Select
+                                value={samplingStrategy}
+                                onValueChange={setSamplingStrategy}
+                                disabled={batchStats.completed > 0}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select strategy" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="least_confidence">
+                                    Least Confidence
+                                  </SelectItem>
+                                  <SelectItem value="margin">
+                                    Margin Sampling
+                                  </SelectItem>
+                                  <SelectItem value="entropy">
+                                    Entropy
+                                  </SelectItem>
+                                  <SelectItem value="diversity">
+                                    Diversity-based
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label>Learning Rate Strategy</Label>
+                              <Select
+                                value={lrConfig.strategy}
+                                onValueChange={(value) =>
+                                  setLrConfig((prev) => ({
+                                    ...prev,
+                                    strategy: value,
+                                  }))
+                                }
+                                disabled={isRetraining}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select LR strategy" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="plateau">
+                                    Reduce on Plateau
+                                  </SelectItem>
+                                  <SelectItem value="cosine">
+                                    Cosine Annealing
+                                  </SelectItem>
+                                  <SelectItem value="warmup">
+                                    One Cycle with Warmup
+                                  </SelectItem>
+                                  <SelectItem value="step">
+                                    Step Decay
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-4">
+                            <div className="space-y-2">
+                              <Label>Initial Learning Rate</Label>
+                              <Input
+                                type="number"
+                                value={lrConfig.initial_lr}
+                                onChange={(e) =>
+                                  setLrConfig((prev) => ({
+                                    ...prev,
+                                    initial_lr: parseFloat(e.target.value),
+                                  }))
+                                }
+                                min={0.0001}
+                                max={0.1}
+                                step={0.0001}
+                                disabled={isRetraining}
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label>Batch Size</Label>
+                              <Input
+                                type="number"
+                                value={batchSize}
+                                onChange={(e) => {
+                                  const newBatchSize = Number(e.target.value);
+                                  setBatchSize(newBatchSize);
+                                  setBatchStats((prev) => ({
+                                    ...prev,
+                                    totalImages: newBatchSize,
+                                    remaining: newBatchSize,
+                                  }));
+                                }}
+                                min={1}
+                                max={100}
+                                disabled={
+                                  isRetraining || batchStats.completed > 0
+                                }
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label>Epochs</Label>
+                              <Input
+                                type="number"
+                                value={epochs}
+                                onChange={(e) => {
+                                  const newEpochs = Number(e.target.value);
+                                  setEpochs(newEpochs);
+                                }}
+                                min={5}
+                                disabled={isRetraining}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Data Split Configuration */}
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label>Validation Split</Label>
+                              <div className="flex items-center space-x-2">
+                                <Input
+                                  type="range"
+                                  min="0.1"
+                                  max="0.3"
+                                  step="0.05"
+                                  value={valSplit}
+                                  onChange={(e) =>
+                                    setValSplit(parseFloat(e.target.value))
+                                  }
+                                  className="flex-1"
+                                />
+                                <span className="text-sm w-16 text-right">
+                                  {(valSplit * 100).toFixed(0)}%
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label>Initial Labeled Ratio</Label>
+                              <div className="flex items-center space-x-2">
+                                <Input
+                                  type="range"
+                                  min="0.1"
+                                  max="0.8"
+                                  step="0.05"
+                                  value={initialLabeledRatio}
+                                  onChange={(e) =>
+                                    setInitialLabeledRatio(
+                                      parseFloat(e.target.value)
+                                    )
+                                  }
+                                  className="flex-1"
+                                />
+                                <span className="text-sm w-16 text-right">
+                                  {(initialLabeledRatio * 100).toFixed(0)}%
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Image Loader */}
+                        <ImageLoader
+                          onImagesLoaded={handleImagesLoaded}
+                          onError={setImageLoadError}
+                        />
+
+                        {imageLoadError && (
+                          <Alert
+                            variant={
+                              imageLoadError.includes("successfully")
+                                ? "default"
+                                : "destructive"
+                            }
+                          >
+                            <AlertCircle className="h-4 w-4" />
+                            <AlertDescription>
+                              {imageLoadError}
+                            </AlertDescription>
+                          </Alert>
+                        )}
+
+                        {/* Start Project Button */}
+                        <Button
+                          className="w-full"
+                          onClick={handleStartProject}
+                          disabled={
+                            !projectName ||
+                            labels.length === 0 ||
+                            !hasLoadedFiles() ||
+                            isProjectFullyInitialized ||
+                            isLoading
+                          }
+                        >
+                          {isLoading
+                            ? "Initializing Project..."
+                            : isProjectFullyInitialized
+                            ? "Project Started"
+                            : "Start Project"}
+                        </Button>
+
+                        {/* Training Controls */}
+                        {isProjectFullyInitialized && (
+                          <>
+                            <AutomatedTrainingControls
+                              onStart={handleStartAutomatedTraining}
+                              onStop={handleStopAutomatedTraining}
+                              status={automatedStatus}
+                              metrics={trainingMetrics}
+                              disabled={!isInitialized}
+                              episode_history={episodeHistory}
+                            />
+
+                            <div>
+                              <ActiveLearningStatus
+                                status={status}
+                                onStartNewBatch={handleStartNewBatch}
+                              />
+                            </div>
+
+                            <CheckpointControls
+                              onSave={handleSaveCheckpoint}
+                              onLoad={handleLoadCheckpoint}
+                              checkpoints={checkpoints}
+                            />
+
+                            <div className="space-y-4">
+                              <div className="flex gap-4">
+                                <Button
+                                  onClick={async () => {
+                                    try {
+                                      // First, send the current labels to the backend
+                                      if (labels.length > 0) {
+                                        await activeLearnAPI.updateProjectLabels(
+                                          labels
+                                        );
+                                      }
+
+                                      const response = await fetch(
+                                        `http://localhost:8000/export-project`,
+                                        {
+                                          method: "GET",
+                                        }
+                                      );
+
+                                      if (!response.ok) {
+                                        throw new Error(
+                                          `Failed to export project: ${response.statusText}`
+                                        );
+                                      }
+
+                                      const blob = await response.blob();
+                                      const url =
+                                        window.URL.createObjectURL(blob);
+                                      const a = document.createElement("a");
+                                      a.href = url;
+
+                                      const contentDisposition =
+                                        response.headers.get(
+                                          "content-disposition"
+                                        );
+                                      let filename = `${projectName}_project_${new Date()
+                                        .toISOString()
+                                        .slice(0, 10)}.zip`;
+
+                                      if (contentDisposition) {
+                                        const filenameMatch =
+                                          contentDisposition.match(
+                                            /filename="([^"]+)"/
+                                          );
+                                        if (filenameMatch) {
+                                          filename = filenameMatch[1];
+                                        }
+                                      }
+
+                                      a.download = filename;
+                                      document.body.appendChild(a);
+                                      a.click();
+                                      window.URL.revokeObjectURL(url);
+                                      document.body.removeChild(a);
+
+                                      setImageLoadError(
+                                        "Project exported successfully!"
+                                      );
+                                    } catch (error) {
+                                      setImageLoadError(
+                                        "Failed to export project: " +
+                                          error.message
+                                      );
+                                    }
+                                  }}
+                                  disabled={!isInitialized || !projectName}
+                                >
+                                  <Download className="h-4 w-4 mr-2" />
+                                  Export Project
+                                </Button>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
               </TabsContent>
             </Tabs>
           </div>

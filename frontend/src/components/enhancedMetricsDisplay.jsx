@@ -123,8 +123,6 @@ const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
                   type="monotone"
                   dataKey="loss"
                   stroke="#82ca9d"
-                  name="Training Loss"
-                  dot={false}
                   activeDot={{ r: 8 }}
                 />
               </LineChart>

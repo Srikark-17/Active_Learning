@@ -33,7 +33,7 @@ const ModelAdaptationControls = ({ onAdaptSuccess, onError, disabled }) => {
   };
 
   return (
-    <Card>
+    <Card className="mt-4">
       <CardHeader>
         <CardTitle>Model Adaptation</CardTitle>
       </CardHeader>

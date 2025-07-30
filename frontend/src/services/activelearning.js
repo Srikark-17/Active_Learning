@@ -259,17 +259,6 @@ const activeLearnAPI = {
     return `${API_URL}/image/${imageId}`;
   },
 
-  async exportModel() {
-    const response = await fetch(`${API_URL}/export-model`, {
-      method: "GET",
-    });
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || "Failed to export model");
-    }
-    return response.blob();
-  },
-
   async importModel(file) {
     const formData = new FormData();
     formData.append("uploaded_file", file); // Match the parameter name in FastAPI
@@ -595,6 +584,49 @@ const activeLearnAPI = {
     }
 
     return await response.json();
+  },
+
+  async exportProject() {
+    const response = await fetch(`${API_URL}/export-project`, {
+      method: "GET",
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to export project");
+    }
+    return response.blob();
+  },
+
+  async importProject(file) {
+    const formData = new FormData();
+    formData.append("uploaded_file", file);
+
+    const response = await fetch(`${API_URL}/import-project`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to import project");
+    }
+
+    return response.json();
+  },
+
+  async updateProjectLabels(labels) {
+    const response = await fetch(`${API_URL}/update-project-labels`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ labels: labels }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to update project labels");
+    }
+
+    return response.json();
   },
 };
 
