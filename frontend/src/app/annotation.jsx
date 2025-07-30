@@ -1123,581 +1123,603 @@ Possible solutions:
     return false;
   };
 
-  console.log("predictions: ", currentBatch[currentImageIndex]?.predictions);
-
   return (
-    <div className="container mx-auto p-6">
-      <div className="grid grid-cols-2 gap-6">
-        {/* Left Column - Project Configuration */}
-        <div>
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="mb-6">
-            <TabsList className="grid grid-cols-2">
-              <TabsTrigger value="new">New Project</TabsTrigger>
-              <TabsTrigger value="import">Import Pretrained</TabsTrigger>
-            </TabsList>
-            <TabsContent value="new">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Project Configuration</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-6">
-                    <div>
-                      <Label htmlFor="project-name">Project Name</Label>
-                      <Input
-                        id="project-name"
-                        value={projectName}
-                        onChange={(e) => setProjectName(e.target.value)}
-                        className="mt-1"
-                        disabled={isInitialized}
-                        placeholder="Enter project name"
-                      />
-                    </div>
+    <>
+      <div className="flex px-5 pt-5 pb-3 h-1/6 items-center justify-between">
+        <div className="flex items-center gap-4 w-1/4">
+          <img src="hms.png" alt="Harvard Medical School Logo" />
+          <img src="meei.jpg" alt="Mass Eye and Ear Institute Logo" />
+        </div>
+      </div>
+      <div className="container mx-auto p-6">
+        <div className="grid grid-cols-2 gap-6">
+          {/* Left Column - Project Configuration */}
+          <div>
+            <Tabs
+              value={activeTab}
+              onValueChange={setActiveTab}
+              className="mb-6"
+            >
+              <TabsList className="grid grid-cols-2">
+                <TabsTrigger value="new">New Project</TabsTrigger>
+                <TabsTrigger value="import">Import Pretrained</TabsTrigger>
+              </TabsList>
+              <TabsContent value="new">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Project Configuration</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-6">
+                      <div>
+                        <Label htmlFor="project-name">Project Name</Label>
+                        <Input
+                          id="project-name"
+                          value={projectName}
+                          onChange={(e) => setProjectName(e.target.value)}
+                          className="mt-1"
+                          disabled={isInitialized}
+                          placeholder="Enter project name"
+                        />
+                      </div>
 
-                    <div>
-                      <Label>Model Selection</Label>
-                      <Select
-                        value={selectedModel}
-                        onValueChange={setSelectedModel}
-                        disabled={isInitialized}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select model" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="resnet18">ResNet18</SelectItem>
-                          <SelectItem value="resnet50">ResNet50</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    {/* Label Management */}
-                    <div>
-                      <Label>Labels</Label>
-                      {labels.map((label, index) => (
-                        <div key={index} className="flex gap-2 mt-2">
-                          <Input
-                            value={label}
-                            onChange={(e) =>
-                              handleLabelChange(index, e.target.value)
-                            }
-                            placeholder={`Label ${index + 1}`}
-                          />
-                          {labels.length > 1 && (
-                            <Button
-                              variant="outline"
-                              size="icon"
-                              onClick={() => handleRemoveLabel(index)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          )}
-                        </div>
-                      ))}
-                      <Button
-                        variant="outline"
-                        onClick={handleAddLabel}
-                        className="w-full mt-2"
-                      >
-                        <Plus className="h-4 w-4 mr-2" />
-                        Add Label
-                      </Button>
-                    </div>
-
-                    {/* Sampling Strategy Controls */}
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label>Sampling Strategy</Label>
+                      <div>
+                        <Label>Model Selection</Label>
                         <Select
-                          value={samplingStrategy}
-                          onValueChange={setSamplingStrategy}
-                          disabled={batchStats.completed > 0} // Only disable during training or mid-batch
+                          value={selectedModel}
+                          onValueChange={setSelectedModel}
+                          disabled={isInitialized}
                         >
                           <SelectTrigger>
-                            <SelectValue placeholder="Select strategy" />
+                            <SelectValue placeholder="Select model" />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="least_confidence">
-                              Least Confidence
-                            </SelectItem>
-                            <SelectItem value="margin">
-                              Margin Sampling
-                            </SelectItem>
-                            <SelectItem value="entropy">Entropy</SelectItem>
-                            <SelectItem value="diversity">
-                              Diversity-based
-                            </SelectItem>
+                            <SelectItem value="resnet18">ResNet18</SelectItem>
+                            <SelectItem value="resnet50">ResNet50</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="space-y-2">
-                        <Label>Learning Rate Strategy</Label>
-                        <Select
-                          value={lrConfig.strategy}
-                          onValueChange={(value) =>
-                            setLrConfig((prev) => ({
-                              ...prev,
-                              strategy: value,
-                            }))
-                          }
-                          disabled={isRetraining}
+
+                      {/* Label Management */}
+                      <div>
+                        <Label>Labels</Label>
+                        {labels.map((label, index) => (
+                          <div key={index} className="flex gap-2 mt-2">
+                            <Input
+                              value={label}
+                              onChange={(e) =>
+                                handleLabelChange(index, e.target.value)
+                              }
+                              placeholder={`Label ${index + 1}`}
+                            />
+                            {labels.length > 1 && (
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                onClick={() => handleRemoveLabel(index)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                        <Button
+                          variant="outline"
+                          onClick={handleAddLabel}
+                          className="w-full mt-2"
                         >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select LR strategy" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="plateau">
-                              Reduce on Plateau
-                            </SelectItem>
-                            <SelectItem value="cosine">
-                              Cosine Annealing
-                            </SelectItem>
-                            <SelectItem value="warmup">
-                              One Cycle with Warmup
-                            </SelectItem>
-                            <SelectItem value="step">Step Decay</SelectItem>
-                          </SelectContent>
-                        </Select>
+                          <Plus className="h-4 w-4 mr-2" />
+                          Add Label
+                        </Button>
+                      </div>
 
-                        <Label>Initial Learning Rate</Label>
-                        <Input
-                          type="number"
-                          value={lrConfig.initial_lr}
-                          onChange={(e) =>
-                            setLrConfig((prev) => ({
-                              ...prev,
-                              initial_lr: parseFloat(e.target.value),
-                            }))
-                          }
-                          min={0.0001}
-                          max={0.1}
-                          step={0.0001}
-                          disabled={isRetraining}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Batch Size</Label>
-                        <Input
-                          type="number"
-                          value={batchSize}
-                          onChange={(e) => {
-                            const newBatchSize = Number(e.target.value);
-                            setBatchSize(newBatchSize);
-                            setBatchStats((prev) => ({
-                              ...prev,
-                              totalImages: newBatchSize,
-                              remaining: newBatchSize,
-                            }));
-                          }}
-                          min={1}
-                          max={100}
-                          disabled={isRetraining || batchStats.completed > 0} // Only disable during training or mid-batch
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Epochs</Label>
-                        <Input
-                          type="number"
-                          value={epochs}
-                          onChange={(e) => {
-                            const newEpochs = Number(e.target.value);
-                            setEpochs(newEpochs);
-                          }}
-                          min={10}
-                          disabled={isRetraining} // Only disable during training
-                        />
-                      </div>
-                    </div>
-
-                    {/* Data Split Configuration */}
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label>Validation Split</Label>
-                        <div className="flex items-center space-x-2">
-                          <Input
-                            type="range"
-                            min="0.1"
-                            max="0.3"
-                            step="0.05"
-                            value={valSplit}
-                            onChange={(e) =>
-                              setValSplit(parseFloat(e.target.value))
+                      {/* Sampling Strategy Controls */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label>Sampling Strategy</Label>
+                          <Select
+                            value={samplingStrategy}
+                            onValueChange={setSamplingStrategy}
+                            disabled={batchStats.completed > 0} // Only disable during training or mid-batch
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select strategy" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="least_confidence">
+                                Least Confidence
+                              </SelectItem>
+                              <SelectItem value="margin">
+                                Margin Sampling
+                              </SelectItem>
+                              <SelectItem value="entropy">Entropy</SelectItem>
+                              <SelectItem value="diversity">
+                                Diversity-based
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Learning Rate Strategy</Label>
+                          <Select
+                            value={lrConfig.strategy}
+                            onValueChange={(value) =>
+                              setLrConfig((prev) => ({
+                                ...prev,
+                                strategy: value,
+                              }))
                             }
-                            className="flex-1"
+                            disabled={isRetraining}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select LR strategy" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="plateau">
+                                Reduce on Plateau
+                              </SelectItem>
+                              <SelectItem value="cosine">
+                                Cosine Annealing
+                              </SelectItem>
+                              <SelectItem value="warmup">
+                                One Cycle with Warmup
+                              </SelectItem>
+                              <SelectItem value="step">Step Decay</SelectItem>
+                            </SelectContent>
+                          </Select>
+
+                          <Label>Initial Learning Rate</Label>
+                          <Input
+                            type="number"
+                            value={lrConfig.initial_lr}
+                            onChange={(e) =>
+                              setLrConfig((prev) => ({
+                                ...prev,
+                                initial_lr: parseFloat(e.target.value),
+                              }))
+                            }
+                            min={0.0001}
+                            max={0.1}
+                            step={0.0001}
+                            disabled={isRetraining}
                           />
-                          <span className="text-sm w-16 text-right">
-                            {(valSplit * 100).toFixed(0)}%
-                          </span>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Batch Size</Label>
+                          <Input
+                            type="number"
+                            value={batchSize}
+                            onChange={(e) => {
+                              const newBatchSize = Number(e.target.value);
+                              setBatchSize(newBatchSize);
+                              setBatchStats((prev) => ({
+                                ...prev,
+                                totalImages: newBatchSize,
+                                remaining: newBatchSize,
+                              }));
+                            }}
+                            min={1}
+                            max={100}
+                            disabled={isRetraining || batchStats.completed > 0} // Only disable during training or mid-batch
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Epochs</Label>
+                          <Input
+                            type="number"
+                            value={epochs}
+                            onChange={(e) => {
+                              const newEpochs = Number(e.target.value);
+                              setEpochs(newEpochs);
+                            }}
+                            min={10}
+                            disabled={isRetraining} // Only disable during training
+                          />
                         </div>
                       </div>
 
-                      <div className="space-y-2">
-                        <Label>Initial Labeled Ratio</Label>
-                        <div className="flex items-center space-x-2">
-                          <Input
-                            type="range"
-                            min="0.1"
-                            max="0.8"
-                            step="0.05"
-                            value={initialLabeledRatio}
-                            onChange={(e) =>
-                              setInitialLabeledRatio(parseFloat(e.target.value))
-                            }
-                            className="flex-1"
-                          />
-                          <span className="text-sm w-16 text-right">
-                            {(initialLabeledRatio * 100).toFixed(0)}%
-                          </span>
+                      {/* Data Split Configuration */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label>Validation Split</Label>
+                          <div className="flex items-center space-x-2">
+                            <Input
+                              type="range"
+                              min="0.1"
+                              max="0.3"
+                              step="0.05"
+                              value={valSplit}
+                              onChange={(e) =>
+                                setValSplit(parseFloat(e.target.value))
+                              }
+                              className="flex-1"
+                            />
+                            <span className="text-sm w-16 text-right">
+                              {(valSplit * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label>Initial Labeled Ratio</Label>
+                          <div className="flex items-center space-x-2">
+                            <Input
+                              type="range"
+                              min="0.1"
+                              max="0.8"
+                              step="0.05"
+                              value={initialLabeledRatio}
+                              onChange={(e) =>
+                                setInitialLabeledRatio(
+                                  parseFloat(e.target.value)
+                                )
+                              }
+                              className="flex-1"
+                            />
+                            <span className="text-sm w-16 text-right">
+                              {(initialLabeledRatio * 100).toFixed(0)}%
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    {loadedImages.length > 0 && (
-                      <div className="text-sm text-gray-600">
-                        Loaded {loadedImages.length} images
-                      </div>
-                    )}
+                      {loadedImages.length > 0 && (
+                        <div className="text-sm text-gray-600">
+                          Loaded {loadedImages.length} images
+                        </div>
+                      )}
 
-                    {loadedImages.length > 0 && (
-                      <Card className="bg-secondary/50">
-                        <CardContent className="pt-4">
-                          <h4 className="font-medium mb-2">
-                            Data Split Preview
-                          </h4>
-                          <div className="space-y-1 text-sm">
-                            <div className="flex justify-between">
-                              <span>Total Images:</span>
-                              <span>{loadedImages.length}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span>Validation Set:</span>
-                              <span>
-                                {Math.round(loadedImages.length * valSplit)}{" "}
-                                images
-                              </span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span>Initial Labeled Set:</span>
-                              <span>
-                                {Math.round(
-                                  loadedImages.length *
-                                    (1 - valSplit) *
-                                    initialLabeledRatio
-                                )}{" "}
-                                images
-                              </span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span>Remaining Unlabeled:</span>
-                              <span>
-                                {loadedImages.length -
-                                  Math.round(loadedImages.length * valSplit) -
-                                  Math.round(
+                      {loadedImages.length > 0 && (
+                        <Card className="bg-secondary/50">
+                          <CardContent className="pt-4">
+                            <h4 className="font-medium mb-2">
+                              Data Split Preview
+                            </h4>
+                            <div className="space-y-1 text-sm">
+                              <div className="flex justify-between">
+                                <span>Total Images:</span>
+                                <span>{loadedImages.length}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span>Validation Set:</span>
+                                <span>
+                                  {Math.round(loadedImages.length * valSplit)}{" "}
+                                  images
+                                </span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span>Initial Labeled Set:</span>
+                                <span>
+                                  {Math.round(
                                     loadedImages.length *
                                       (1 - valSplit) *
                                       initialLabeledRatio
                                   )}{" "}
-                                images
-                              </span>
+                                  images
+                                </span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span>Remaining Unlabeled:</span>
+                                <span>
+                                  {loadedImages.length -
+                                    Math.round(loadedImages.length * valSplit) -
+                                    Math.round(
+                                      loadedImages.length *
+                                        (1 - valSplit) *
+                                        initialLabeledRatio
+                                    )}{" "}
+                                  images
+                                </span>
+                              </div>
                             </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    )}
+                          </CardContent>
+                        </Card>
+                      )}
 
-                    <ImageLoader
-                      onImagesLoaded={handleImagesLoaded}
-                      onError={setImageLoadError}
-                    />
+                      <ImageLoader
+                        onImagesLoaded={handleImagesLoaded}
+                        onError={setImageLoadError}
+                      />
 
-                    {imageLoadError && (
-                      <Alert variant="destructive">
-                        <AlertCircle className="h-4 w-4" />
-                        <AlertDescription>{imageLoadError}</AlertDescription>
-                      </Alert>
-                    )}
-                    <Button
-                      className="w-full"
-                      onClick={handleStartProject}
-                      disabled={
-                        !projectName ||
-                        labels.length === 0 ||
-                        !hasLoadedFiles() ||
-                        isProjectFullyInitialized || // Only disable when fully initialized with data
-                        isLoading
-                      }
-                    >
-                      {isLoading
-                        ? "Initializing Project..."
-                        : isInitialized && !isProjectFullyInitialized
-                        ? "Start Project with Pretrained Model"
-                        : "Start Project"}
-                    </Button>
-                    {isInitialized && (
-                      <AutomatedTrainingControls
-                        onStart={handleStartAutomatedTraining}
-                        onStop={handleStopAutomatedTraining}
-                        status={automatedStatus}
-                        metrics={trainingMetrics} // Pass metrics to controls
-                        disabled={!isInitialized}
-                        episode_history={episodeHistory}
+                      {imageLoadError && (
+                        <Alert variant="destructive">
+                          <AlertCircle className="h-4 w-4" />
+                          <AlertDescription>{imageLoadError}</AlertDescription>
+                        </Alert>
+                      )}
+                      <Button
+                        className="w-full"
+                        onClick={handleStartProject}
+                        disabled={
+                          !projectName ||
+                          labels.length === 0 ||
+                          !hasLoadedFiles() ||
+                          isProjectFullyInitialized || // Only disable when fully initialized with data
+                          isLoading
+                        }
+                      >
+                        {isLoading
+                          ? "Initializing Project..."
+                          : isInitialized && !isProjectFullyInitialized
+                          ? "Start Project with Pretrained Model"
+                          : "Start Project"}
+                      </Button>
+                      {isInitialized && (
+                        <AutomatedTrainingControls
+                          onStart={handleStartAutomatedTraining}
+                          onStop={handleStopAutomatedTraining}
+                          status={automatedStatus}
+                          metrics={trainingMetrics} // Pass metrics to controls
+                          disabled={!isInitialized}
+                          episode_history={episodeHistory}
+                        />
+                      )}
+                      <div>
+                        <ActiveLearningStatus
+                          status={status}
+                          onStartNewBatch={handleStartNewBatch}
+                        />
+                      </div>
+                      <CheckpointControls
+                        onSave={handleSaveCheckpoint}
+                        onLoad={handleLoadCheckpoint}
+                        checkpoints={checkpoints}
                       />
-                    )}
-                    <div>
-                      <ActiveLearningStatus
-                        status={status}
-                        onStartNewBatch={handleStartNewBatch}
-                      />
-                    </div>
-                    <CheckpointControls
-                      onSave={handleSaveCheckpoint}
-                      onLoad={handleLoadCheckpoint}
-                      checkpoints={checkpoints}
-                    />
-                    <div className="space-y-4">
-                      <div className="flex gap-4">
-                        <Button
-                          onClick={async () => {
-                            try {
-                              const blob = await activeLearnAPI.exportModel();
-                              const url = window.URL.createObjectURL(blob);
-                              const a = document.createElement("a");
-                              a.href = url;
-                              // Update export filename with parameters
-                              const filename = `${projectName}_${samplingStrategy}_e${epochs}_b${batchSize}_model.pt`;
-                              a.download = filename;
-                              document.body.appendChild(a);
-                              a.click();
-                              window.URL.revokeObjectURL(url);
-                            } catch (error) {
-                              setImageLoadError(
-                                "Failed to export model: " + error.message
-                              );
-                            }
-                          }}
-                          disabled={isBatchInProgress}
-                        >
-                          <Download className="h-4 w-4 mr-2" />
-                          Export Model
-                        </Button>
+                      <div className="space-y-4">
+                        <div className="flex gap-4">
+                          <Button
+                            onClick={async () => {
+                              try {
+                                const blob = await activeLearnAPI.exportModel();
+                                const url = window.URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                // Update export filename with parameters
+                                const filename = `${projectName}_${samplingStrategy}_e${epochs}_b${batchSize}_model.pt`;
+                                a.download = filename;
+                                document.body.appendChild(a);
+                                a.click();
+                                window.URL.revokeObjectURL(url);
+                              } catch (error) {
+                                setImageLoadError(
+                                  "Failed to export model: " + error.message
+                                );
+                              }
+                            }}
+                            disabled={isBatchInProgress}
+                          >
+                            <Download className="h-4 w-4 mr-2" />
+                            Export Model
+                          </Button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-            <TabsContent value="import">
-              <div className="space-y-6">
-                <PretrainedModelImport
-                  onImportSuccess={(result) => {
-                    setProjectName(result.project_name);
-                    setSelectedModel(result.model_type);
-                    setIsInitialized(true); // Keep this for ModelAdaptationControls
-                    setImageLoadError(
-                      "Pre-trained model imported successfully! Upload your data and click Start Project."
-                    );
-
-                    // Fetch any needed state updates
-                    activeLearnAPI.getStatus().then((status) => {
-                      setStatus(status);
-                    });
-
-                    activeLearnAPI.getMetrics().then((metrics) => {
-                      setMetrics(metrics);
-                    });
-                  }}
-                  onError={(errorMsg) => {
-                    setImageLoadError(errorMsg);
-                  }}
-                />
-                {isInitialized && (
-                  <ModelAdaptationControls
-                    onAdaptSuccess={(result) => {
+                  </CardContent>
+                </Card>
+              </TabsContent>
+              <TabsContent value="import">
+                <div className="space-y-6">
+                  <PretrainedModelImport
+                    onImportSuccess={(result) => {
+                      setProjectName(result.project_name);
+                      setSelectedModel(result.model_type);
+                      setIsInitialized(true); // Keep this for ModelAdaptationControls
                       setImageLoadError(
-                        `Model adaptation successful using ${result.adaptation_type} strategy`
+                        "Pre-trained model imported successfully! Upload your data and click Start Project."
                       );
+
+                      // Fetch any needed state updates
+                      activeLearnAPI.getStatus().then((status) => {
+                        setStatus(status);
+                      });
+
+                      activeLearnAPI.getMetrics().then((metrics) => {
+                        setMetrics(metrics);
+                      });
                     }}
                     onError={(errorMsg) => {
-                      setImageLoadError(`Adaptation error: ${errorMsg}`);
+                      setImageLoadError(errorMsg);
                     }}
-                    disabled={!isInitialized || isRetraining}
                   />
-                )}
-              </div>
-            </TabsContent>
-          </Tabs>
-        </div>
+                  {isInitialized && (
+                    <ModelAdaptationControls
+                      onAdaptSuccess={(result) => {
+                        setImageLoadError(
+                          `Model adaptation successful using ${result.adaptation_type} strategy`
+                        );
+                      }}
+                      onError={(errorMsg) => {
+                        setImageLoadError(`Adaptation error: ${errorMsg}`);
+                      }}
+                      disabled={!isInitialized || isRetraining}
+                    />
+                  )}
+                </div>
+              </TabsContent>
+            </Tabs>
+          </div>
 
-        {/* Right Column - Image Annotation */}
-        <div>
-          <Card className="sticky top-6">
-            <CardHeader>
-              <CardTitle>Image Annotation</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {/* Image Display with Navigation */}
-                <div className="bg-gray-100 rounded-lg overflow-hidden">
-                  <img
-                    src={currentImage}
-                    alt="Current image for annotation"
-                    className="w-full object-contain max-h-96"
+          {/* Right Column - Image Annotation */}
+          <div>
+            <Card className="sticky top-6">
+              <CardHeader>
+                <CardTitle>Image Annotation</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {/* Image Display with Navigation */}
+                  <div className="bg-gray-100 rounded-lg overflow-hidden">
+                    <img
+                      src={currentImage}
+                      alt="Current image for annotation"
+                      className="w-full object-contain max-h-96"
+                    />
+                    {loadedImages.length > 0 && (
+                      <div className="p-4 bg-white border-t flex justify-between items-center">
+                        <Button
+                          onClick={handlePreviousImage}
+                          disabled={currentImageIndex === 0}
+                          variant="outline"
+                        >
+                          Previous
+                        </Button>
+                        <span className="text-sm text-gray-600">
+                          Image {currentImageIndex + 1} of {batchSize}
+                        </span>
+                        <Button
+                          onClick={handleNextImage}
+                          disabled={
+                            currentImageIndex === loadedImages.length - 1
+                          }
+                          variant="outline"
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  {imageLoadError && (
+                    <Alert
+                      variant={
+                        imageLoadError.startsWith("Training") ||
+                        imageLoadError.startsWith("Getting")
+                          ? "default"
+                          : "destructive"
+                      }
+                    >
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription>{imageLoadError}</AlertDescription>
+                    </Alert>
+                  )}
+                  {/* Label Selection */}
+                  <div className="space-y-2">
+                    <Label>Assign Label</Label>
+                    <RadioGroup
+                      value={selectedLabel}
+                      onValueChange={setSelectedLabel}
+                      className="space-y-2"
+                    >
+                      {labels.map((label, index) => (
+                        <div
+                          key={index}
+                          className="flex items-center space-x-2"
+                        >
+                          <RadioGroupItem
+                            value={index.toString()}
+                            id={`label-${index}`}
+                          />
+                          <Label htmlFor={`label-${index}`}>{label}</Label>
+                        </div>
+                      ))}
+                    </RadioGroup>
+                  </div>
+                  {/* Action Buttons */}
+                  <div className="flex justify-between pt-4">
+                    <Button
+                      className="w-full"
+                      onClick={handleSubmitLabel}
+                      disabled={!selectedLabel}
+                    >
+                      Submit Label
+                    </Button>
+                  </div>
+
+                  <BatchProgress
+                    currentBatch={currentBatch}
+                    batchStats={batchStats}
+                    onSubmitLabel={handleSubmitLabel}
+                    selectedLabel={selectedLabel}
+                    isRetraining={isRetraining}
+                    validationAccuracy={validationAccuracy}
                   />
-                  {loadedImages.length > 0 && (
-                    <div className="p-4 bg-white border-t flex justify-between items-center">
-                      <Button
-                        onClick={handlePreviousImage}
-                        disabled={currentImageIndex === 0}
-                        variant="outline"
-                      >
-                        Previous
-                      </Button>
-                      <span className="text-sm text-gray-600">
-                        Image {currentImageIndex + 1} of {batchSize}
-                      </span>
-                      <Button
-                        onClick={handleNextImage}
-                        disabled={currentImageIndex === loadedImages.length - 1}
-                        variant="outline"
-                      >
-                        Next
-                      </Button>
+
+                  {currentBatch.length > 0 &&
+                    currentImageIndex < currentBatch.length &&
+                    (() => {
+                      const rawPredictions =
+                        currentBatch[currentImageIndex]?.predictions || [];
+                      const filteredPredictions = getFilteredPredictions(
+                        rawPredictions,
+                        labels
+                      );
+
+                      console.log("=== CREATING NEW COMPONENT INSTANCE ===");
+                      console.log(
+                        "Predictions to render:",
+                        filteredPredictions
+                      );
+
+                      // Render inline to avoid any component caching issues
+                      return (
+                        <div
+                          key={`predictions-${currentImageIndex}-${Date.now()}`}
+                        >
+                          <h4 className="font-medium mb-2">
+                            Model Predictions
+                          </h4>
+                          <div className="text-xs text-gray-400 mb-2">
+                            Image {currentImageIndex + 1} - Showing{" "}
+                            {filteredPredictions.length} predictions
+                          </div>
+                          <div className="space-y-2">
+                            {filteredPredictions.map((pred, idx) => {
+                              const confidence = Math.round(
+                                pred.confidence * 100
+                              );
+                              console.log(
+                                `RENDERING: ${pred.label} with ${confidence}% (raw: ${pred.confidence})`
+                              );
+
+                              return (
+                                <div
+                                  key={`${pred.label}-${pred.confidence}-${idx}`}
+                                  className="flex items-center gap-2"
+                                >
+                                  <div className="w-full bg-gray-200 rounded-full h-2.5">
+                                    <div
+                                      className="bg-blue-600 h-2.5 rounded-full"
+                                      style={{
+                                        width: `${Math.max(confidence, 1)}%`,
+                                      }}
+                                    ></div>
+                                  </div>
+                                  <span className="text-sm whitespace-nowrap">
+                                    {pred.label}:{" "}
+                                    {(pred.confidence * 100).toFixed(2)}%
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                  {isRetraining && (
+                    <div className="mt-4">
+                      <Card className="bg-blue-50 border-blue-200">
+                        <CardContent className="p-4">
+                          <div className="flex items-center space-x-2">
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                            <p className="text-blue-700">
+                              Training in progress... Please wait
+                            </p>
+                          </div>
+                          <p className="text-sm text-blue-600 mt-2">
+                            This may take several minutes depending on the
+                            dataset size
+                          </p>
+                        </CardContent>
+                      </Card>
                     </div>
                   )}
                 </div>
-                {imageLoadError && (
-                  <Alert
-                    variant={
-                      imageLoadError.startsWith("Training") ||
-                      imageLoadError.startsWith("Getting")
-                        ? "default"
-                        : "destructive"
-                    }
-                  >
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertDescription>{imageLoadError}</AlertDescription>
-                  </Alert>
-                )}
-                {/* Label Selection */}
-                <div className="space-y-2">
-                  <Label>Assign Label</Label>
-                  <RadioGroup
-                    value={selectedLabel}
-                    onValueChange={setSelectedLabel}
-                    className="space-y-2"
-                  >
-                    {labels.map((label, index) => (
-                      <div key={index} className="flex items-center space-x-2">
-                        <RadioGroupItem
-                          value={index.toString()}
-                          id={`label-${index}`}
-                        />
-                        <Label htmlFor={`label-${index}`}>{label}</Label>
-                      </div>
-                    ))}
-                  </RadioGroup>
-                </div>
-                {/* Action Buttons */}
-                <div className="flex justify-between pt-4">
-                  <Button
-                    className="w-full"
-                    onClick={handleSubmitLabel}
-                    disabled={!selectedLabel}
-                  >
-                    Submit Label
-                  </Button>
-                </div>
-
-                <BatchProgress
-                  currentBatch={currentBatch}
-                  batchStats={batchStats}
-                  onSubmitLabel={handleSubmitLabel}
-                  selectedLabel={selectedLabel}
-                  isRetraining={isRetraining}
-                  validationAccuracy={validationAccuracy}
-                />
-
-                {currentBatch.length > 0 &&
-                  currentImageIndex < currentBatch.length &&
-                  (() => {
-                    const rawPredictions =
-                      currentBatch[currentImageIndex]?.predictions || [];
-                    const filteredPredictions = getFilteredPredictions(
-                      rawPredictions,
-                      labels
-                    );
-
-                    console.log("=== CREATING NEW COMPONENT INSTANCE ===");
-                    console.log("Predictions to render:", filteredPredictions);
-
-                    // Render inline to avoid any component caching issues
-                    return (
-                      <div
-                        key={`predictions-${currentImageIndex}-${Date.now()}`}
-                      >
-                        <h4 className="font-medium mb-2">Model Predictions</h4>
-                        <div className="text-xs text-gray-400 mb-2">
-                          Image {currentImageIndex + 1} - Showing{" "}
-                          {filteredPredictions.length} predictions
-                        </div>
-                        <div className="space-y-2">
-                          {filteredPredictions.map((pred, idx) => {
-                            const confidence = Math.round(
-                              pred.confidence * 100
-                            );
-                            console.log(
-                              `RENDERING: ${pred.label} with ${confidence}% (raw: ${pred.confidence})`
-                            );
-
-                            return (
-                              <div
-                                key={`${pred.label}-${pred.confidence}-${idx}`}
-                                className="flex items-center gap-2"
-                              >
-                                <div className="w-full bg-gray-200 rounded-full h-2.5">
-                                  <div
-                                    className="bg-blue-600 h-2.5 rounded-full"
-                                    style={{
-                                      width: `${Math.max(confidence, 1)}%`,
-                                    }}
-                                  ></div>
-                                </div>
-                                <span className="text-sm whitespace-nowrap">
-                                  {pred.label}:{" "}
-                                  {(pred.confidence * 100).toFixed(2)}%
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                {isRetraining && (
-                  <div className="mt-4">
-                    <Card className="bg-blue-50 border-blue-200">
-                      <CardContent className="p-4">
-                        <div className="flex items-center space-x-2">
-                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
-                          <p className="text-blue-700">
-                            Training in progress... Please wait
-                          </p>
-                        </div>
-                        <p className="text-sm text-blue-600 mt-2">
-                          This may take several minutes depending on the dataset
-                          size
-                        </p>
-                      </CardContent>
-                    </Card>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 };
 

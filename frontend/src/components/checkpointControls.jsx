@@ -14,8 +14,8 @@ function CheckpointControls({ onSave, onLoad, checkpoints }) {
       <Button onClick={onSave}>Save Checkpoint</Button>
 
       <div>
-        <Label>Load Checkpoint</Label>
-        <Select onValueChange={onLoad}>
+        <Label>Export Checkpoint</Label>
+        <Select disabled={checkpoints.length == 0} onValueChange={onLoad}>
           <SelectTrigger>
             <SelectValue placeholder="Select checkpoint" />
           </SelectTrigger>

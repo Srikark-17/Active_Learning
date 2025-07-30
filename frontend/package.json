@@ -25,6 +25,7 @@
     "papaparse": "^5.5.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-tooltip": "^5.29.1",
     "recharts": "^2.15.0",
     "shadcn": "^2.4.0-canary.12",
     "switch": "^0.0.0",

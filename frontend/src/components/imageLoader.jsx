@@ -10,9 +10,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "./ui/dialog";
 import Papa from "papaparse";
+import { Tooltip } from "react-tooltip";
 
 const ImageLoader = ({ onImagesLoaded, onError }) => {
   const fileInputRef = useRef(null);
@@ -260,10 +260,14 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
             onClick={() => fileInputRef.current.click()}
             className="w-full"
             variant="outline"
+            title="hi"
+            data-tooltip-id="upload-img-tooltip"
+            data-tooltip-content="Upload images for active learning classification"
           >
             <Upload className="h-4 w-4 mr-2" />
             Upload Images
           </Button>
+          <Tooltip id="upload-img-tooltip" />
           <input
             type="file"
             ref={fileInputRef}
@@ -277,10 +281,13 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
             onClick={() => folderInputRef.current.click()}
             className="w-full"
             variant="outline"
+            data-tooltip-id="upload-folder-tooltip"
+            data-tooltip-content="Upload a folder of images for classification"
           >
             <FolderUp className="h-4 w-4 mr-2" />
             Upload Folder
           </Button>
+          <Tooltip id="upload-folder-tooltip" />
           <input
             type="file"
             ref={folderInputRef}
@@ -298,10 +305,13 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
             className="w-full"
             variant="outline"
             disabled={isLoading}
+            data-tooltip-id="upload-csv-tooltip"
+            data-tooltip-content="Upload a CSV with image paths for classification"
           >
             <Archive className="h-4 w-4 mr-2" />
             {isLoading ? "Processing..." : "Upload CSV + Images Together"}
           </Button>
+          <Tooltip id="upload-csv-tooltip" />
           <input
             type="file"
             ref={csvAndImagesRef}
@@ -316,10 +326,13 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
             className="w-full"
             variant="default"
             disabled={isLoading}
+            data-tooltip-id="upload-csv-labels-tooltip"
+            data-tooltip-content="Upload a CSV with image paths and labels for classification"
           >
             <Table className="h-4 w-4 mr-2" />
             {isLoading ? "Processing..." : "Upload CSV with Labels + Images"}
           </Button>
+          <Tooltip id="upload-csv-labels-tooltip" />
           <input
             type="file"
             ref={csvWithLabelsRef}
