@@ -1142,7 +1142,7 @@ Possible solutions:
             >
               <TabsList className="grid grid-cols-2">
                 <TabsTrigger value="new">New Project</TabsTrigger>
-                <TabsTrigger value="import">Import Pretrained</TabsTrigger>
+                <TabsTrigger value="import">Import Project</TabsTrigger>
               </TabsList>
               <TabsContent value="new">
                 <Card>

@@ -30,6 +30,9 @@ For a development environment, run
 4. Upload the folder directory, individual images, CSVs with images and with or without annotations
 5. Click "Start Project"
 6. Now, for each image, select the appropriate label.
+
+- NOTE: If you're importing a CSV with annotations, the annotation label in the file should match the one you're entering (case-sensitive).
+
 7. Click "Submit Label" after selecting the appropriate label.
 8. Repeat steps 6-7 for all images
 9. While annotating, it's important to note that there are model predictions below the labels to view the model's performance at predicting the image's label
@@ -44,6 +47,9 @@ For a development environment, run
 4. Upload the model file
 5. Click "Import model"
 6. Now, for each image, select the appropriate label.
+
+- NOTE: If you're importing a CSV with annotations, the annotation label in the file should match the one you're entering (case-sensitive).
+
 7. Click "Submit Label" after selecting the appropriate label.
 8. Repeat steps 6-7 for all images
 9. While annotating, it's important to note that there are model predictions below the labels to view the model's performance at predicting the image's label
