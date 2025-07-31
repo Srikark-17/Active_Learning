@@ -1,5 +1,3 @@
-<!-- TODO: add a note saying csvs need to include absolute paths -->
-
 # Active Learning Interface
 
 This is a React app that can be used to conduct Active Learning locally for image annotation and train models. It can be used by non-professionals, as well. This is a React app that can be used to conduct Active Learning locally for image annotation and train models. It can be used by non-professionals, as well. Active Learning is an iterative machine learning approach where the model intelligently selects the most informative samples for human labeling, rather than requiring humans to label every piece of data. The system starts with a small set of labeled images, trains an initial model, and then identifies uncertain or ambiguous images that would most improve the model's performance when labeled. This significantly reduces the time and effort needed for data labeling while maintaining high model quality. Users can simply review and label the suggested images through an intuitive interface, and the model continuously learns and improves from this focused feedback. This approach is particularly valuable when working with large image datasets where labeling everything would be impractical.
@@ -33,7 +31,7 @@ For a development environment, run
 5. Click "Start Project"
 6. Now, for each image, select the appropriate label.
 
-- NOTE: If you're importing a CSV with annotations, the annotation label in the file should match the one you're entering (case-sensitive).
+- NOTE: If you're importing a CSV with or without annotations, the image paths should be absolute paths, NOT relative paths. If you're importing a CSV with annotations, the annotation label in the file should match the one you're entering (case-sensitive).
 
 7. Click "Submit Label" after selecting the appropriate label.
 8. Repeat steps 6-7 for all images
