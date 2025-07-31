@@ -968,35 +968,58 @@ Possible solutions:
   const handleLoadCheckpoint = async (checkpointId) => {
     try {
       setImageLoadError("Loading checkpoint...");
-      await activeLearnAPI.loadCheckpoint(checkpointId);
+
+      console.log("Loading checkpoint:", checkpointId);
+
+      const response = await fetch(`http://localhost:8000/load-checkpoint`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          checkpoint_path: checkpointId,
+        }),
+      });
+
+      console.log("Checkpoint load response status:", response.status);
+
+      if (!response.ok) {
+        const errorData = await response.text();
+        console.error("Checkpoint load error:", errorData);
+        throw new Error(
+          `Failed to load checkpoint: ${response.status} - ${errorData}`
+        );
+      }
+
+      const result = await response.json();
+      console.log("Checkpoint load result:", result);
+
       // Refresh current state
       const [status, metrics, history] = await Promise.all([
         activeLearnAPI.getStatus(),
         activeLearnAPI.getMetrics(),
         activeLearnAPI.getEpisodeHistory(),
       ]);
+
       setStatus(status);
       setMetrics(metrics);
       setEpisodeHistory(history.episodes);
-      setImageLoadError("Checkpoint loaded successfully!");
+      setImageLoadError(
+        `Checkpoint loaded successfully! Episode ${
+          result.episode
+        }, Accuracy: ${result.best_val_acc.toFixed(2)}%`
+      );
     } catch (error) {
+      console.error("Load checkpoint error:", error);
       setImageLoadError("Failed to load checkpoint: " + error.message);
     }
   };
 
   useEffect(() => {
-    if (isInitialized) {
-      const loadCheckpoints = async () => {
-        try {
-          const result = await activeLearnAPI.listCheckpoints();
-          setCheckpoints(result.checkpoints);
-        } catch (error) {
-          console.error("Failed to load checkpoints:", error);
-        }
-      };
-      loadCheckpoints();
+    if (isProjectFullyInitialized) {
     }
-  }, [isInitialized]);
+  }, [isProjectFullyInitialized]);
 
   useEffect(() => {
     // When currentBatch changes (like after loading a new batch)
@@ -1015,6 +1038,15 @@ Possible solutions:
       // Reset batch progress state
       setIsBatchInProgress(true);
       setCurrentImageIndex(0);
+      const loadCheckpoints = async () => {
+        try {
+          const result = await activeLearnAPI.listCheckpoints();
+          setCheckpoints(result.checkpoints);
+        } catch (error) {
+          console.error("Failed to load checkpoints:", error);
+        }
+      };
+      loadCheckpoints();
     }
   }, [currentBatch]);
 
@@ -1428,13 +1460,15 @@ Possible solutions:
                         </>
                       ) : (
                         <>
-                          {/* Pretrained Model Import */}
                           <PretrainedModelImport
                             onImportSuccess={(result) => {
+                              console.log("=== IMPORT DEBUG ===");
+                              console.log("Full result:", result);
+
                               setProjectName(result.project_info.project_name);
-                              setSelectedModel(
-                                result.project_info.model_type || "resnet50"
-                              );
+                              const importedModelType =
+                                result.project_info.model_type || "resnet50";
+                              setSelectedModel(importedModelType);
                               setIsInitialized(true);
 
                               // Restore labels from imported project
@@ -1444,9 +1478,17 @@ Possible solutions:
                                   "Restored labels:",
                                   result.labels.label_names
                                 );
+                              } else {
+                                const numClasses =
+                                  result.project_info.num_classes || 2;
+                                const defaultLabels = Array.from(
+                                  { length: numClasses },
+                                  (_, i) => `Class ${i + 1}`
+                                );
+                                setLabels(defaultLabels);
                               }
 
-                              // Update hyperparameters from imported project
+                              // Update hyperparameters
                               if (result.hyperparameters) {
                                 setSamplingStrategy(
                                   result.hyperparameters.sampling_strategy ||
@@ -1465,7 +1507,7 @@ Possible solutions:
                                 );
                               }
 
-                              // Update metrics if available
+                              // Update metrics
                               if (result.project_info) {
                                 setValidationAccuracy(
                                   result.project_info
@@ -1473,27 +1515,57 @@ Possible solutions:
                                 );
                               }
 
-                              setImageLoadError(
-                                `Project imported successfully! Model loaded with ${
-                                  result.project_info.best_validation_accuracy?.toFixed(
-                                    2
-                                  ) || 0
-                                }% accuracy. Upload new images to continue training.`
-                              );
+                              // **NEW: Handle automatic image loading**
+                              if (
+                                result.images_loaded &&
+                                result.project_ready
+                              ) {
+                                setIsProjectFullyInitialized(true);
+                                setImageLoadError(
+                                  `Project imported successfully! Model: ${importedModelType}. 
+       Loaded ${result.dataset_stats.loaded_from_annotations} images automatically. 
+       Getting first batch for active learning...`
+                                );
+
+                                // Auto-start by getting the first batch
+                                setTimeout(async () => {
+                                  try {
+                                    await getNextBatch();
+                                    setImageLoadError(
+                                      `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`
+                                    );
+                                  } catch (error) {
+                                    console.error(
+                                      "Error getting first batch:",
+                                      error
+                                    );
+                                    setImageLoadError(
+                                      `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`
+                                    );
+                                  }
+                                }, 1000);
+                              } else if (
+                                result.dataset_stats.loaded_from_annotations > 0
+                              ) {
+                                // Some images loaded but project not ready (maybe all labeled)
+                                setImageLoadError(
+                                  `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`
+                                );
+                              } else {
+                                // No images loaded automatically
+                                setImageLoadError(
+                                  `${result.message} Images were not found in the expected locations. You can upload new images to continue.`
+                                );
+                              }
 
                               // Fetch current state
                               activeLearnAPI
                                 .getStatus()
-                                .then((status) => {
-                                  setStatus(status);
-                                })
+                                .then(setStatus)
                                 .catch(console.error);
-
                               activeLearnAPI
                                 .getMetrics()
-                                .then((metrics) => {
-                                  setMetrics(metrics);
-                                })
+                                .then(setMetrics)
                                 .catch(console.error);
                             }}
                             onError={(errorMsg) => {
@@ -1792,11 +1864,29 @@ Possible solutions:
                           <Button
                             onClick={async () => {
                               try {
-                                // First, send the current labels to the backend
+                                // ALWAYS send current labels before export
+                                console.log(
+                                  "Sending labels to backend before export:",
+                                  labels
+                                );
+
                                 if (labels.length > 0) {
-                                  await activeLearnAPI.updateProjectLabels(
-                                    labels
+                                  const labelResponse = await fetch(
+                                    `http://localhost:8000/update-project-labels`,
+                                    {
+                                      method: "POST",
+                                      headers: {
+                                        "Content-Type": "application/json",
+                                      },
+                                      body: JSON.stringify({ labels: labels }),
+                                    }
                                   );
+
+                                  if (!labelResponse.ok) {
+                                    console.warn(
+                                      "Failed to update labels, but continuing with export"
+                                    );
+                                  }
                                 }
 
                                 const response = await fetch(
@@ -1864,18 +1954,32 @@ Possible solutions:
               <TabsContent value="import">
                 <ProjectImport
                   onImportSuccess={(result) => {
+                    console.log("=== IMPORT DEBUG ===");
+                    console.log("Full result:", result);
+
                     setProjectName(result.project_info.project_name);
-                    setSelectedModel(
-                      result.project_info.model_type || "resnet50"
-                    );
+                    const importedModelType =
+                      result.project_info.model_type || "resnet50";
+                    setSelectedModel(importedModelType);
                     setIsInitialized(true);
 
                     // Restore labels from imported project
                     if (result.labels && result.labels.label_names) {
                       setLabels(result.labels.label_names);
+                      console.log(
+                        "Restored labels:",
+                        result.labels.label_names
+                      );
+                    } else {
+                      const numClasses = result.project_info.num_classes || 2;
+                      const defaultLabels = Array.from(
+                        { length: numClasses },
+                        (_, i) => `Class ${i + 1}`
+                      );
+                      setLabels(defaultLabels);
                     }
 
-                    // Update hyperparameters from imported project
+                    // Update hyperparameters
                     if (result.hyperparameters) {
                       setSamplingStrategy(
                         result.hyperparameters.sampling_strategy ||
@@ -1891,30 +1995,58 @@ Possible solutions:
                       );
                     }
 
-                    // Update metrics if available
+                    // Update metrics
                     if (result.project_info) {
                       setValidationAccuracy(
                         result.project_info.best_validation_accuracy || 0
                       );
                     }
 
-                    setImageLoadError(
-                      `Project imported successfully! Project: ${result.project_info.project_name}. Labels and settings restored.`
-                    );
+                    // **NEW: Handle automatic image loading**
+                    if (result.images_loaded && result.project_ready) {
+                      setIsProjectFullyInitialized(true);
+                      setImageLoadError(
+                        `Project imported successfully! Model: ${importedModelType}. 
+       Loaded ${result.dataset_stats.loaded_from_annotations} images automatically. 
+       Getting first batch for active learning...`
+                      );
+
+                      // Auto-start by getting the first batch
+                      setTimeout(async () => {
+                        try {
+                          await getNextBatch();
+                          setImageLoadError(
+                            `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`
+                          );
+                        } catch (error) {
+                          console.error("Error getting first batch:", error);
+                          setImageLoadError(
+                            `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`
+                          );
+                        }
+                      }, 1000);
+                    } else if (
+                      result.dataset_stats.loaded_from_annotations > 0
+                    ) {
+                      // Some images loaded but project not ready (maybe all labeled)
+                      setImageLoadError(
+                        `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`
+                      );
+                    } else {
+                      // No images loaded automatically
+                      setImageLoadError(
+                        `${result.message} Images were not found in the expected locations. You can upload new images to continue.`
+                      );
+                    }
 
                     // Fetch current state
                     activeLearnAPI
                       .getStatus()
-                      .then((status) => {
-                        setStatus(status);
-                      })
+                      .then(setStatus)
                       .catch(console.error);
-
                     activeLearnAPI
                       .getMetrics()
-                      .then((metrics) => {
-                        setMetrics(metrics);
-                      })
+                      .then(setMetrics)
                       .catch(console.error);
                   }}
                   onError={(errorMsg) => {
@@ -2228,11 +2360,32 @@ Possible solutions:
                                 <Button
                                   onClick={async () => {
                                     try {
-                                      // First, send the current labels to the backend
+                                      // ALWAYS send current labels before export
+                                      console.log(
+                                        "Sending labels to backend before export:",
+                                        labels
+                                      );
+
                                       if (labels.length > 0) {
-                                        await activeLearnAPI.updateProjectLabels(
-                                          labels
+                                        const labelResponse = await fetch(
+                                          `http://localhost:8000/update-project-labels`,
+                                          {
+                                            method: "POST",
+                                            headers: {
+                                              "Content-Type":
+                                                "application/json",
+                                            },
+                                            body: JSON.stringify({
+                                              labels: labels,
+                                            }),
+                                          }
                                         );
+
+                                        if (!labelResponse.ok) {
+                                          console.warn(
+                                            "Failed to update labels, but continuing with export"
+                                          );
+                                        }
                                       }
 
                                       const response = await fetch(

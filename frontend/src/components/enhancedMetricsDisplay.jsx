@@ -11,10 +11,6 @@ import {
 } from "recharts";
 
 const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
-  // For debugging
-  console.log("Metrics received:", metrics);
-  console.log("Episode history received:", episode_history);
-
   // Transform loss data directly from the API format
   const lossData =
     metrics?.current_epoch_losses?.x?.map((x, i) => ({
@@ -38,9 +34,6 @@ const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
       accuracy: metrics.episodeAccuracies.y[i],
     })) ||
     [];
-
-  console.log("Transformed loss data:", lossData);
-  console.log("Transformed accuracy data:", accuracyData);
 
   // Get current episode and best accuracy from multiple possible sources
   const currentEpisode =

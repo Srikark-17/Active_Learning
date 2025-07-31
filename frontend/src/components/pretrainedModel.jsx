@@ -33,6 +33,7 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
   const [labelColumn, setLabelColumn] = useState("annotation");
   const [delimiter, setDelimiter] = useState(",");
   const [modelImported, setModelImported] = useState(false);
+  const [verified, setVerified] = useState(false);
 
   const modelFileRef = useRef(null);
 
@@ -50,11 +51,23 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
 
       if (result.compatible) {
         setModelInfo(result);
-        // Update UI with detected info
-        if (result.model_type) setModelType(result.model_type);
-        if (result.num_classes) setNumClasses(result.num_classes);
+
+        // Handle different model types differently
+        if (result.detected_type === "vision-transformer") {
+          setModelType("vision-transformer");
+          if (!result.num_classes || result.num_classes > 100) {
+            setNumClasses(numClasses > 1 ? numClasses : 2);
+          } else {
+            setNumClasses(result.num_classes);
+          }
+        } else {
+          // For ResNet and other models, use detected values
+          if (result.model_type) setModelType(result.model_type);
+          if (result.num_classes) setNumClasses(result.num_classes);
+        }
 
         setImportStatus(`Model verified: ${result.message}`);
+        setVerified(true);
       } else {
         setImportError(`Incompatible model: ${result.message}`);
         setImportStatus(null);
@@ -76,11 +89,11 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
       setImportError(null);
       setImportStatus("Importing model...");
 
-      // Import the pretrained model
+      // Import the pretrained model with user-specified parameters
       const importResult = await activeLearnAPI.importPretrainedModel(
         selectedFile,
         modelType,
-        numClasses,
+        numClasses, // This is the user-specified value
         projectName
       );
 
@@ -88,89 +101,19 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
       setImportStatus("Model imported successfully");
       setModelImported(true);
 
-      // If CSV file is selected, process it with annotations
-      if (csvFile) {
-        setImportStatus("Processing CSV with annotations...");
+      // Pass the user-specified numClasses, not the detected one
+      const resultWithUserClasses = {
+        ...importResult,
+        num_classes: numClasses, // Override with user-specified value
+        user_specified_classes: numClasses,
+      };
 
-        try {
-          const csvResult = await activeLearnAPI.uploadCSVPathsWithLabels(
-            csvFile,
-            labelColumn,
-            delimiter,
-            0.2, // Default validation split
-            0.4 // Default initial labeled ratio
-          );
-
-          console.log("CSV processing result:", csvResult);
-
-          setImportStatus(
-            `Model imported and CSV processed. ${csvResult.stats.labeled} labeled images, ${csvResult.stats.unlabeled} unlabeled images.`
-          );
-
-          // If we have labeled data, start training
-          if (csvResult.stats.labeled > 0) {
-            setImportStatus("Starting initial training with annotated data...");
-
-            try {
-              const trainingResult = await activeLearnAPI.startEpisode(
-                10, // Default epochs
-                32 // Default batch size
-              );
-
-              console.log("Initial training result:", trainingResult);
-              setImportStatus(
-                "Initial training complete. Model ready for active learning."
-              );
-
-              // Get first batch for active learning
-              await activeLearnAPI.getNextBatch();
-            } catch (error) {
-              console.error("Initial training error:", error);
-              setImportError(`Initial training error: ${error.message}`);
-              // Still consider import successful even if training fails
-            }
-          }
-        } catch (error) {
-          console.error("CSV processing error:", error);
-          setImportError(`CSV processing error: ${error.message}`);
-          // Consider model import successful even if CSV processing fails
-        }
-      }
-
-      // Call the success callback with import result
-      onImportSuccess(importResult);
+      // Call the success callback with the corrected result
+      onImportSuccess(resultWithUserClasses);
     } catch (error) {
       console.error("Import error:", error);
       setImportError(`Failed to import model: ${error.message}`);
       setImportStatus(null);
-    } finally {
-      setIsImporting(false);
-    }
-  };
-
-  const handleAdaptModel = async (adaptationType = "last_layer") => {
-    if (!modelImported) {
-      setImportError("Please import a model first");
-      return;
-    }
-
-    try {
-      setIsImporting(true);
-      setImportError(null);
-      setImportStatus(`Adapting model (${adaptationType})...`);
-
-      const adaptResult = await activeLearnAPI.adaptPretrainedModel(
-        true, // freeze layers
-        adaptationType
-      );
-
-      console.log("Model adaptation result:", adaptResult);
-      setImportStatus(
-        `Model adapted successfully using ${adaptationType} strategy`
-      );
-    } catch (error) {
-      console.error("Adaptation error:", error);
-      setImportError(`Failed to adapt model: ${error.message}`);
     } finally {
       setIsImporting(false);
     }
@@ -205,7 +148,10 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
             <SelectContent>
               <SelectItem value="resnet18">ResNet18</SelectItem>
               <SelectItem value="resnet50">ResNet50</SelectItem>
-              <SelectItem value="custom">Custom / Other</SelectItem>
+              <SelectItem value="vision-transformer">
+                Vision Transformer
+              </SelectItem>
+              <SelectItem value="custom">Custom Model</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -276,7 +222,7 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
         <Button
           className="w-full"
           onClick={handleImportModel}
-          disabled={!selectedFile || isImporting}
+          disabled={!selectedFile || isImporting || !verified}
         >
           {isImporting ? "Importing..." : "Import Model"}
         </Button>

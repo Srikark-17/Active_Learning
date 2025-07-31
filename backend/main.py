@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, HTTPException, File, Form, Response
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import torch
 import torch.nn as nn
@@ -83,6 +83,84 @@ class LabelSubmission(BaseModel):
     image_id: int
     label: int
 
+class SimpleViTClassifier(nn.Module):
+    """Simple ViT-based classifier for RETFound and similar models"""
+    def __init__(self, num_classes=2, feature_dim=768):
+        super().__init__()
+        # This will be replaced with loaded ViT weights
+        self.feature_extractor = nn.Identity()  # Placeholder
+        self.classifier = nn.Linear(feature_dim, num_classes)
+        
+    def forward(self, x):
+        # This is a placeholder - will be replaced when loading RETFound weights
+        features = self.feature_extractor(x)
+        if len(features.shape) > 2:
+            features = features.mean(dim=1)  # Global average pooling
+        return self.classifier(features)
+
+def create_vit_model(num_classes=2, image_size=224, patch_size=16, embed_dim=768, num_heads=12, num_layers=12):
+    """Create a proper Vision Transformer model"""
+    try:
+        # Try to use timm if available for better ViT support
+        import timm
+        model = timm.create_model('vit_base_patch16_224', pretrained=True, num_classes=num_classes)
+        return model
+    except ImportError:
+        # Fallback to a custom ViT implementation
+        return SimpleViTClassifier(num_classes=num_classes, feature_dim=embed_dim)
+
+class ImprovedViTClassifier(nn.Module):
+    """Improved ViT-based classifier"""
+    def __init__(self, num_classes=2, image_size=224, patch_size=16, embed_dim=768, num_heads=12, num_layers=12):
+        super().__init__()
+        self.patch_size = patch_size
+        self.num_patches = (image_size // patch_size) ** 2
+        self.embed_dim = embed_dim
+        
+        # Patch embedding
+        self.patch_embed = nn.Conv2d(3, embed_dim, kernel_size=patch_size, stride=patch_size)
+        
+        # Position embeddings
+        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches + 1, embed_dim))
+        self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
+        
+        # Transformer blocks
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=embed_dim * 4,
+            dropout=0.1,
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Classification head
+        self.norm = nn.LayerNorm(embed_dim)
+        self.classifier = nn.Linear(embed_dim, num_classes)
+        
+    def forward(self, x):
+        B = x.shape[0]
+        
+        # Patch embedding
+        x = self.patch_embed(x)  # B, embed_dim, H//patch_size, W//patch_size
+        x = x.flatten(2).transpose(1, 2)  # B, num_patches, embed_dim
+        
+        # Add cls token
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)
+        
+        # Add position embeddings
+        x = x + self.pos_embed
+        
+        # Transformer
+        x = self.transformer(x)
+        
+        # Classification head (use cls token)
+        x = self.norm(x[:, 0])
+        x = self.classifier(x)
+        
+        return x
+
 class ActiveLearningManager:
     def __init__(self):
         self.model = None
@@ -93,6 +171,7 @@ class ActiveLearningManager:
         self.current_batch = []
         self.episode = 0
         self.project_name = None
+        self.image_paths = {}
         self.output_dir = None
         self.checkpoint_manager = None
         self.lr_scheduler = None
@@ -156,12 +235,6 @@ class ActiveLearningManager:
             if not project_name:
                 raise ValueError("Project name is required")
                 
-            # More flexible model type handling
-            valid_models = ["resnet18", "resnet50", "efficientnet", "densenet", "mobilenet", "custom"]
-            if model_name not in valid_models:
-                print(f"Warning: Unknown model type '{model_name}'. Treating as 'custom'")
-                model_name = "custom"  # Fallback to custom
-                    
             # Set up project
             self.project_name = project_name
             self.output_dir = os.path.join("output", project_name, 
@@ -171,32 +244,22 @@ class ActiveLearningManager:
             # Initialize model based on type
             if model_name == "resnet18":
                 self.model = models.resnet18(pretrained=True)
+                num_features = self.model.fc.in_features
+                self.model.fc = nn.Linear(num_features, num_classes)
             elif model_name == "resnet50":
                 self.model = models.resnet50(pretrained=True)
-            elif model_name == "efficientnet":
-                # Use ResNet50 as a fallback but print a notice
-                print("EfficientNet not directly supported - using ResNet50 as base architecture")
-                self.model = models.resnet50(pretrained=True)
-            elif model_name == "densenet":
-                # Use ResNet50 as a fallback but print a notice
-                print("DenseNet not directly supported - using ResNet50 as base architecture")
-                self.model = models.resnet50(pretrained=True)
-            elif model_name == "mobilenet":
-                # Use ResNet50 as a fallback but print a notice
-                print("MobileNet not directly supported - using ResNet50 as base architecture")
-                self.model = models.resnet50(pretrained=True)
-            elif model_name == "custom":
-                # For custom models, use ResNet50 as the base architecture
-                print("Using ResNet50 as base architecture for custom model")
-                self.model = models.resnet50(pretrained=True)
+                num_features = self.model.fc.in_features
+                self.model.fc = nn.Linear(num_features, num_classes)
+            elif model_name == "vision-transformer" or model_name == "custom":
+                # Create a proper ViT architecture instead of SimpleViTClassifier
+                self.model = create_vit_model(num_classes=num_classes)
             else:
-                # Should never reach here due to validation above, but just in case
-                print(f"Unsupported model type: {model_name}, using ResNet50")
+                # Default fallback
+                print(f"Unknown model type: {model_name}, using ResNet50")
                 self.model = models.resnet50(pretrained=True)
+                num_features = self.model.fc.in_features
+                self.model.fc = nn.Linear(num_features, num_classes)
                 
-            # Modify final layer for our number of classes
-            num_features = self.model.fc.in_features
-            self.model.fc = nn.Linear(num_features, num_classes)
             self.model = self.model.to(self.device)
 
             # Update training config if provided
@@ -282,6 +345,9 @@ class ActiveLearningManager:
             img_tensor = self.transform(img)
             img_id = len(all_data)
             all_data[img_id] = img_tensor
+            
+            # STORE THE ORIGINAL FILENAME
+            self.image_paths[img_id] = img_file.filename or f"uploaded_image_{img_id}.jpg"
 
         # Calculate split sizes
         total_images = len(all_data)
@@ -835,9 +901,7 @@ class ActiveLearningManager:
                             self.checkpoint_manager.save_checkpoint(state, is_best=True)
                     except Exception as e:
                         print(f"Warning: Failed to save checkpoint: {str(e)}")
-                        # Continue training even if checkpoint saving fails
                         pass
-
 
                 # Store training progress
                 self.plot_epoch_xvalues.append(epoch + 1)
@@ -1253,24 +1317,38 @@ class ActiveLearningManager:
         """
         try:
             # Check if this is a transformer-based model
-            is_transformer = any(k in ['cls_token', 'pos_embed', 'patch_embed'] 
-                                for k in model_state.keys())
-            
-            if is_transformer:
-                print("Detected transformer-based model. Attempting specialized adaptation...")
-                success, message = self.adapt_transformer_to_resnet(
-                    model_state, 
-                    self.model,
-                    num_classes=self.model.fc.out_features if hasattr(self.model, 'fc') else None
-                )
-                if success:
-                    print(f"Transformer adaptation: {message}")
-                else:
-                    print("Transformer adaptation failed. Falling back to standard approach.")
+            is_vit = any(k in ['cls_token', 'pos_embed', 'patch_embed'] for k in model_state.keys())
+        
+            if is_vit:
+                print("Detected ViT model (like RETFound). Performing specialized adaptation...")
+                
+                # For ViT models, we want to:
+                # 1. Load the feature extraction layers
+                # 2. Replace the classification head with our own
+                
+                # Remove the original head if it exists
+                keys_to_remove = [k for k in model_state.keys() if 'head' in k.lower()]
+                for key in keys_to_remove:
+                    print(f"Removing original head layer: {key}")
+                    del model_state[key]
+                
+                # Load the feature extraction weights
+                missing_keys, unexpected_keys = self.model.load_state_dict(model_state, strict=False)
+                print(f"Loaded ViT weights. Missing: {len(missing_keys)}, Unexpected: {len(unexpected_keys)}")
+                
+                # Freeze feature extraction layers if requested
+                if freeze_layers:
+                    for name, param in self.model.named_parameters():
+                        if 'classifier' not in name and 'head' not in name:
+                            param.requires_grad = False
+                            
+                    print("Froze ViT feature extraction layers, keeping classifier trainable")
+                
+                return True
             
             # Continue with standard adaptation
             # Load the pretrained weights if not a transformer or transformer adaptation failed
-            if not is_transformer or not success:
+            else:
                 if hasattr(self.model, 'load_state_dict'):
                     # Try to load directly, with a non-strict option to allow for differences
                     try:
@@ -1348,65 +1426,144 @@ class CheckpointManager:
         self.checkpoint_dir = os.path.join(output_dir, 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         
-    def save_checkpoint(self, state: dict, is_best: bool = False, filename: str = None):
-        """
-        Save checkpoint with complete state
-        Args:
-            state: Dictionary containing state to save
-            is_best: If True, also save as best model
-            filename: Optional specific filename
-        """
-        if filename is None:
-            filename = f'checkpoint_ep{state["episode"]}.pt'
+    def save_checkpoint(self, state, is_best=False):
+        """Save checkpoint with correct episode numbering"""
+        try:
+            # Use the episode from the state, not increment it
+            episode = state.get('episode', 0)
             
-        filepath = os.path.join(self.checkpoint_dir, filename)
-        
-        # Save checkpoint
-        torch.save(state, filepath)
-        
-        # If best model, create a copy
-        if is_best:
-            best_filepath = os.path.join(self.checkpoint_dir, 'model_best.pt')
-            shutil.copyfile(filepath, best_filepath)
+            # For regular checkpoints, use the current episode
+            checkpoint_path = os.path.join(self.checkpoint_dir, f'checkpoint_ep{episode:03d}.pt')
             
-        return filepath
-        
-    def load_checkpoint(self, model, optimizer=None, scheduler=None, filename=None):
-        """
-        Load checkpoint and restore state
-        Args:
-            model: Model to restore
-            optimizer: Optional optimizer to restore
-            scheduler: Optional scheduler to restore
-            filename: Specific checkpoint file to load (if None, load latest)
-        Returns:
-            Loaded state dict and epoch number
-        """
-        if filename is None:
-            # Find latest checkpoint
-            checkpoints = sorted(glob.glob(os.path.join(self.checkpoint_dir, 'checkpoint_ep*.pt')))
-            if not checkpoints:
+            # If this is marked as best, also save as best
+            if is_best:
+                best_path = os.path.join(self.checkpoint_dir, 'model_best.pt')
+                
+            # Ensure the state includes all required fields with safe defaults
+            safe_state = {
+                'episode': episode,
+                'model_state': state.get('model_state'),
+                'best_val_acc': state.get('best_val_acc', 0),
+                'training_config': state.get('training_config', {}),
+                'labeled_indices': state.get('labeled_indices', []),
+                'unlabeled_indices': state.get('unlabeled_indices', []),
+                'validation_indices': state.get('validation_indices', []),
+                'metrics': state.get('metrics', {}),
+                'episode_history': state.get('episode_history', [])
+            }
+            
+            # Add optimizer state if available
+            if 'optimizer_state' in state and state['optimizer_state']:
+                safe_state['optimizer_state'] = state['optimizer_state']
+            
+            # Always include scheduler_state to avoid KeyError later (even if empty)
+            if 'scheduler_state' in state and state['scheduler_state']:
+                safe_state['scheduler_state'] = state['scheduler_state']
+            else:
+                safe_state['scheduler_state'] = {}
+            
+            # Save the checkpoint
+            torch.save(safe_state, checkpoint_path)
+            print(f"Checkpoint saved to: {checkpoint_path}")
+            
+            # Save as best if requested
+            if is_best:
+                torch.save(safe_state, best_path)
+                print(f"Best model saved to: {best_path}")
+            
+            print(f"Saved with keys: {list(safe_state.keys())}")
+            return checkpoint_path
+            
+        except Exception as e:
+            print(f"Error saving checkpoint: {str(e)}")
+            raise e
+            
+    def load_checkpoint(self, model, optimizer=None, scheduler=None, checkpoint_path=None):
+        """Load model checkpoint with safe handling of missing components"""
+        try:
+            if checkpoint_path is None:
+                # Find the latest checkpoint
+                checkpoints = glob.glob(os.path.join(self.checkpoint_dir, 'checkpoint_ep*.pt'))
+                if not checkpoints:
+                    print("No checkpoints found")
+                    return None
+                checkpoint_path = max(checkpoints, key=os.path.getctime)
+            
+            if not os.path.exists(checkpoint_path):
+                print(f"Checkpoint not found: {checkpoint_path}")
                 return None
-            filename = checkpoints[-1]
             
-        # Load checkpoint
-        if torch.cuda.is_available():
-            checkpoint = torch.load(filename)
-        else:
-            checkpoint = torch.load(filename, map_location=torch.device('cpu'))
+            print(f"Loading checkpoint from: {checkpoint_path}")
             
-        # Restore model state
-        model.load_state_dict(checkpoint['model_state'])
-        
-        # Restore optimizer state if provided
-        if optimizer is not None and 'optimizer_state' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer_state'])
+            # Load checkpoint
+            if torch.cuda.is_available():
+                checkpoint = torch.load(checkpoint_path)
+            else:
+                checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
             
-        # Restore scheduler state if provided
-        if scheduler is not None and 'scheduler_state' in checkpoint:
-            scheduler.load_state_dict(checkpoint['scheduler_state'])
+            print(f"Checkpoint keys: {list(checkpoint.keys())}")
             
-        return checkpoint
+            # Load model state
+            if 'model_state' in checkpoint:
+                try:
+                    model.load_state_dict(checkpoint['model_state'])
+                    print("Model state loaded successfully")
+                except Exception as e:
+                    print(f"Warning: Could not load model state: {e}")
+                    # Try loading with strict=False
+                    try:
+                        missing, unexpected = model.load_state_dict(checkpoint['model_state'], strict=False)
+                        print(f"Model loaded with missing keys: {missing}, unexpected keys: {unexpected}")
+                    except Exception as e2:
+                        print(f"Error: Could not load model state even with strict=False: {e2}")
+                        return None
+            else:
+                print("Warning: No model state found in checkpoint")
+            
+            # Load optimizer state if available and provided
+            if optimizer is not None and 'optimizer_state' in checkpoint:
+                try:
+                    optimizer.load_state_dict(checkpoint['optimizer_state'])
+                    print("Optimizer state loaded successfully")
+                except Exception as e:
+                    print(f"Warning: Could not load optimizer state: {e}")
+            elif optimizer is not None:
+                print("No optimizer state found in checkpoint")
+            
+            # Load scheduler state SAFELY - only if both scheduler exists and checkpoint has scheduler_state
+            if scheduler is not None and 'scheduler_state' in checkpoint and checkpoint['scheduler_state']:
+                try:
+                    # Check if the scheduler_state is not empty
+                    scheduler_state = checkpoint['scheduler_state']
+                    if scheduler_state and isinstance(scheduler_state, dict) and scheduler_state:
+                        # Check if scheduler has the load_state_dict method
+                        if hasattr(scheduler, 'load_state_dict'):
+                            scheduler.load_state_dict(scheduler_state)
+                            print("Scheduler state loaded successfully")
+                        elif hasattr(scheduler, 'scheduler') and hasattr(scheduler.scheduler, 'load_state_dict'):
+                            # Handle wrapped schedulers
+                            if 'scheduler_state' in scheduler_state:
+                                scheduler.scheduler.load_state_dict(scheduler_state['scheduler_state'])
+                            else:
+                                scheduler.scheduler.load_state_dict(scheduler_state)
+                            print("Wrapped scheduler state loaded successfully")
+                        else:
+                            print("Warning: Scheduler does not support state loading")
+                    else:
+                        print("Scheduler state is empty, skipping")
+                except Exception as e:
+                    print(f"Warning: Could not load scheduler state: {e}")
+            elif scheduler is not None:
+                print("No scheduler state found in checkpoint or scheduler_state is empty")
+            
+            print(f"Checkpoint loaded from episode {checkpoint.get('episode', 'unknown')}")
+            return checkpoint
+            
+        except Exception as e:
+            print(f"Error loading checkpoint: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
         
     def get_best_model_path(self):
         """Get path to best model checkpoint"""
@@ -2168,6 +2325,51 @@ async def get_image(image_id: int):
         traceback.print_exc()  # Print full traceback
         raise HTTPException(status_code=500, detail=error_msg)
 
+def get_model_num_classes(model):
+    """
+    Safely get the number of output classes from different model architectures
+    """
+    try:
+        # ResNet models
+        if hasattr(model, 'fc') and hasattr(model.fc, 'out_features'):
+            return model.fc.out_features
+        
+        # ViT models or custom models with classifier
+        elif hasattr(model, 'classifier'):
+            if hasattr(model.classifier, 'out_features'):
+                return model.classifier.out_features
+            elif isinstance(model.classifier, nn.Sequential):
+                # Look for the last Linear layer in Sequential classifier
+                for layer in reversed(model.classifier):
+                    if isinstance(layer, nn.Linear):
+                        return layer.out_features
+        
+        # Look for head layer (common in ViT)
+        elif hasattr(model, 'head') and hasattr(model.head, 'out_features'):
+            return model.head.out_features
+        
+        # Custom ViT classifier
+        elif hasattr(model, 'classifier') and isinstance(model.classifier, nn.Linear):
+            return model.classifier.out_features
+        
+        # Sequential model - look for last Linear layer
+        elif isinstance(model, nn.Sequential):
+            for layer in reversed(model):
+                if isinstance(layer, nn.Linear):
+                    return layer.out_features
+        
+        # If all else fails, try to infer from the model's forward pass
+        # This is more risky but can work as a last resort
+        print(f"Warning: Could not determine num_classes for model type {type(model)}")
+        print(f"Model structure: {model}")
+        
+        # Default fallback
+        return 2
+        
+    except Exception as e:
+        print(f"Error getting num_classes: {str(e)}")
+        return 2
+
 @app.get("/export-project")
 async def export_project():
     """Export complete project as ZIP file with model, data, and metadata"""
@@ -2177,24 +2379,48 @@ async def export_project():
         
         print("Starting project export...")
         
+        # INSPECT THE MODEL AND SAVE INFO
+        model_info = inspect_and_save_model_info(al_manager.model, "current_model_inspection.json")
+        print("=== MODEL INSPECTION COMPLETE ===")
+        print(f"Class name: {model_info.get('basic_info', {}).get('class_name', 'unknown')}")
+        print(f"Detected type: {model_info.get('detection_result', {}).get('detected_type', 'unknown')}")
+        
         # Create ZIP file in memory
         zip_buffer = io.BytesIO()
         
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             print("Created ZIP buffer...")
             
+            # Add the model inspection JSON to the ZIP
+            with open("current_model_inspection.json", 'r') as f:
+                zipf.writestr("model_inspection.json", f.read())
+            
             # 1. Export model
+            # Use the inspection results for better type detection
+            model_type_name = model_info.get('detection_result', {}).get('detected_type', 'custom')
+            if model_type_name == 'resnet':
+                model_type_name = model_info.get('detection_result', {}).get('variant', 'resnet50')
+            elif model_type_name == 'unknown':
+                model_type_name = 'custom'
+            
+            num_classes = get_model_num_classes(al_manager.model)
+            is_vit = model_type_name == 'vision_transformer'
+            
             model_export = {
                 'model_state': al_manager.model.state_dict(),
                 'model_config': {
                     'project_name': al_manager.project_name,
                     'episode': al_manager.episode,
-                    'model_type': al_manager.model.__class__.__name__,
-                    'num_classes': al_manager.model.fc.out_features if hasattr(al_manager.model, 'fc') else 2,
+                    'model_type': model_type_name,
+                    'model_class': model_info.get('basic_info', {}).get('class_name', 'unknown'),
+                    'num_classes': num_classes,
                     'best_val_acc': al_manager.best_val_acc,
+                    'is_vision_transformer': is_vit,
+                    'detection_confidence': model_info.get('detection_result', {}).get('confidence', 'unknown'),
+                    'detection_reasoning': model_info.get('detection_result', {}).get('reasoning', [])
                 }
             }
-            
+        
             # Save model to temporary bytes buffer
             model_buffer = io.BytesIO()
             torch.save(model_export, model_buffer)
@@ -2202,19 +2428,20 @@ async def export_project():
             zipf.writestr("model.pt", model_buffer.getvalue())
             print("Added model to ZIP...")
             
-            # 2. Create annotated CSV with ALL images and their paths
+            # 2. Create annotated CSV with ALL images and their REAL paths
             csv_data = []
             
-            # Helper function to get original image path if available
+            # Helper function to get real image path
             def get_image_info(img_id, img_tensor, label, split_type):
-                # Try to get original file path - this would need to be stored during upload
-                # For now, we'll use the image_id as a placeholder
+                # Get the actual stored path or create a fallback
+                original_path = al_manager.image_paths.get(img_id, f"image_{img_id}.jpg")
+                
                 return {
                     'image_id': img_id,
-                    'image_path': f"image_{img_id}.jpg",  # Placeholder - in real implementation, store actual paths
+                    'image_path': original_path,
                     'status': 'labeled' if label is not None else 'unlabeled',
                     'label_index': label,
-                    'label_name': None,  # Will be filled below
+                    'label_name': None,  # Will be filled below if needed
                     'split': split_type
                 }
             
@@ -2230,30 +2457,41 @@ async def export_project():
             for img_id, (img_tensor, label) in al_manager.validation_data.items():
                 csv_data.append(get_image_info(img_id, img_tensor, label, 'validation'))
             
+            # Fill in label names if we have current labels
+            if hasattr(al_manager, 'current_labels') and al_manager.current_labels:
+                for item in csv_data:
+                    if item['label_index'] is not None and item['label_index'] < len(al_manager.current_labels):
+                        item['label_name'] = al_manager.current_labels[item['label_index']]
+            
             # Save CSV
             if csv_data:
                 df = pd.DataFrame(csv_data)
                 csv_buffer = io.StringIO()
                 df.to_csv(csv_buffer, index=False)
                 zipf.writestr("annotations.csv", csv_buffer.getvalue().encode('utf-8'))
-                print("Added CSV to ZIP...")
+                print("Added CSV with real paths to ZIP...")
             
             # 3. Create comprehensive metadata
             training_config = automated_trainer.training_config if 'automated_trainer' in globals() else {}
             
-            # Get current labels from the frontend (you'll need to pass these)
-            current_labels = []
-            num_classes = al_manager.model.fc.out_features if hasattr(al_manager.model, 'fc') else 2
-            for i in range(num_classes):
-                current_labels.append(f"Class {i + 1}")  # Default labels
+            # Get current labels from the frontend (stored by update-project-labels endpoint)
+            current_labels = getattr(al_manager, 'current_labels', [])
+            
+            # If no current labels, create defaults based on detected num_classes
+            if not current_labels:
+                current_labels = [f"Class {i + 1}" for i in range(num_classes)]
+            
+            print(f"Exporting with labels: {current_labels}")
             
             metadata = {
-                'project_info': {
+               'project_info': {
                     'project_name': al_manager.project_name,
                     'export_timestamp': datetime.now().isoformat(),
                     'current_episode': al_manager.episode,
                     'best_validation_accuracy': al_manager.best_val_acc,
-                    'model_type': al_manager.model.__class__.__name__,
+                    'model_type': model_type_name,  # Use determined type
+                    'model_class': al_manager.model.__class__.__name__,
+                    'is_vision_transformer': model_type_name == 'vision-transformer',
                     'num_classes': num_classes,
                 },
                 'labels': {
@@ -2305,7 +2543,7 @@ async def export_project():
             # Save metadata to ZIP
             metadata_json = json.dumps(metadata, indent=2)
             zipf.writestr("metadata.json", metadata_json.encode('utf-8'))
-            print("Added metadata to ZIP...")
+            print(f"Added metadata to ZIP with labels: {current_labels}")
         
         # Prepare the ZIP file for download
         zip_buffer.seek(0)
@@ -2569,43 +2807,180 @@ async def reset_training_state():
 
 @app.post("/save-checkpoint")
 async def save_checkpoint():
-    """Save current model checkpoint"""
+    """Save current model checkpoint manually"""
     try:
-        checkpoint_path = al_manager.save_state()
+        if not al_manager.model:
+            raise HTTPException(status_code=400, detail="No model initialized")
+            
+        if not al_manager.output_dir:
+            raise HTTPException(status_code=400, detail="No output directory set")
+            
+        # Initialize checkpoint manager if it doesn't exist
+        if not hasattr(al_manager, 'checkpoint_manager') or al_manager.checkpoint_manager is None:
+            al_manager.checkpoint_manager = CheckpointManager(al_manager.output_dir)
+            
+        # Create the state to save with CURRENT episode (don't increment)
+        state = {
+            'episode': al_manager.episode,  # Current episode, not incremented
+            'model_state': al_manager.model.state_dict(),
+            'best_val_acc': al_manager.best_val_acc,
+            'training_config': getattr(automated_trainer, 'training_config', {}),
+            'labeled_indices': list(al_manager.labeled_data.keys()),
+            'unlabeled_indices': list(al_manager.unlabeled_data.keys()),
+            'validation_indices': list(al_manager.validation_data.keys()),
+            'metrics': {
+                'episode_accuracies': {
+                    'x': al_manager.plot_episode_xvalues,
+                    'y': al_manager.plot_episode_yvalues
+                },
+                'epoch_losses': {
+                    'x': al_manager.plot_epoch_xvalues,
+                    'y': al_manager.plot_epoch_yvalues
+                }
+            },
+            'episode_history': al_manager.episode_history
+        }
+        
+        # Add optimizer and scheduler states safely
+        if hasattr(al_manager, 'optimizer') and al_manager.optimizer:
+            try:
+                state['optimizer_state'] = al_manager.optimizer.state_dict()
+            except Exception as e:
+                print(f"Warning: Could not save optimizer state: {e}")
+                state['optimizer_state'] = {}
+        else:
+            state['optimizer_state'] = {}
+            
+        if hasattr(al_manager, 'lr_scheduler') and al_manager.lr_scheduler:
+            try:
+                if hasattr(al_manager.lr_scheduler, 'state_dict'):
+                    state['scheduler_state'] = al_manager.lr_scheduler.state_dict()
+                else:
+                    state['scheduler_state'] = {}
+            except Exception as e:
+                print(f"Warning: Could not save scheduler state: {e}")
+                state['scheduler_state'] = {}
+        else:
+            state['scheduler_state'] = {}
+        
+        checkpoint_path = al_manager.checkpoint_manager.save_checkpoint(state)
+        
         return {
             "status": "success",
-            "checkpoint_path": checkpoint_path
+            "checkpoint_path": os.path.basename(checkpoint_path),
+            "message": f"Checkpoint saved for episode {al_manager.episode}"
         }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error saving checkpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to save checkpoint: {str(e)}")
 
 @app.post("/load-checkpoint")
-async def load_checkpoint(checkpoint_path: str = None):
-    """Load model checkpoint"""
+async def load_checkpoint(request: Request):
+    """Load model checkpoint with proper request handling"""
     try:
-        checkpoint = al_manager.load_state(checkpoint_path)
+        # Parse the request body
+        try:
+            body = await request.json()
+            checkpoint_path = body.get('checkpoint_path')
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Invalid JSON in request body: {str(e)}")
+        
+        if not checkpoint_path:
+            raise HTTPException(status_code=422, detail="checkpoint_path is required")
+        
+        if not al_manager.model:
+            raise HTTPException(status_code=400, detail="No model initialized")
+            
+        if not al_manager.output_dir:
+            raise HTTPException(status_code=400, detail="No output directory set")
+            
+        # Initialize checkpoint manager if it doesn't exist
+        if not hasattr(al_manager, 'checkpoint_manager') or al_manager.checkpoint_manager is None:
+            al_manager.checkpoint_manager = CheckpointManager(al_manager.output_dir)
+            
+        # Construct full checkpoint path
+        full_checkpoint_path = os.path.join(al_manager.checkpoint_manager.checkpoint_dir, checkpoint_path)
+        
+        if not os.path.exists(full_checkpoint_path):
+            raise HTTPException(status_code=404, detail=f"Checkpoint not found: {checkpoint_path}")
+        
+        print(f"Loading checkpoint from: {full_checkpoint_path}")
+        
+        # Load the checkpoint
+        checkpoint = al_manager.checkpoint_manager.load_checkpoint(
+            al_manager.model, 
+            getattr(al_manager, 'optimizer', None),
+            getattr(al_manager, 'lr_scheduler', None),
+            full_checkpoint_path
+        )
+        
         if checkpoint:
+            # Restore training state
+            al_manager.episode = checkpoint.get('episode', 0)
+            al_manager.best_val_acc = checkpoint.get('best_val_acc', 0)
+            
+            # Restore metrics
+            metrics = checkpoint.get('metrics', {})
+            al_manager.plot_episode_xvalues = metrics.get('episode_accuracies', {}).get('x', [])
+            al_manager.plot_episode_yvalues = metrics.get('episode_accuracies', {}).get('y', [])
+            al_manager.plot_epoch_xvalues = metrics.get('epoch_losses', {}).get('x', [])
+            al_manager.plot_epoch_yvalues = metrics.get('epoch_losses', {}).get('y', [])
+            
+            # Restore episode history
+            al_manager.episode_history = checkpoint.get('episode_history', [])
+            
+            # Restore data indices if available
+            if 'labeled_indices' in checkpoint:
+                # Note: We can't restore the actual data, but we can track the counts
+                labeled_count = len(checkpoint['labeled_indices'])
+                unlabeled_count = len(checkpoint['unlabeled_indices'])
+                validation_count = len(checkpoint['validation_indices'])
+                print(f"Checkpoint had {labeled_count} labeled, {unlabeled_count} unlabeled, {validation_count} validation images")
+            
             return {
                 "status": "success",
-                "episode": checkpoint['episode'],
-                "best_val_acc": checkpoint['best_val_acc']
+                "episode": checkpoint.get('episode', 0),
+                "best_val_acc": checkpoint.get('best_val_acc', 0),
+                "message": f"Checkpoint {checkpoint_path} loaded successfully"
             }
         else:
-            raise HTTPException(status_code=404, detail="Checkpoint not found")
+            raise HTTPException(status_code=500, detail="Failed to load checkpoint")
+            
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+        print(f"Error loading checkpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to load checkpoint: {str(e)}")
+    
 @app.get("/list-checkpoints")
 async def list_checkpoints():
     """List available checkpoints"""
     try:
-        checkpoints = glob.glob(os.path.join(al_manager.output_dir, 
-            'checkpoints', 'checkpoint_ep*.pt'))
-        return {
-            "checkpoints": [os.path.basename(cp) for cp in checkpoints]
-        }
+        if not al_manager.output_dir:
+            return {"checkpoints": []}
+            
+        # Initialize checkpoint manager if it doesn't exist
+        if not hasattr(al_manager, 'checkpoint_manager') or al_manager.checkpoint_manager is None:
+            al_manager.checkpoint_manager = CheckpointManager(al_manager.output_dir)
+            
+        checkpoint_dir = al_manager.checkpoint_manager.checkpoint_dir
+        
+        if not os.path.exists(checkpoint_dir):
+            return {"checkpoints": []}
+            
+        checkpoints = glob.glob(os.path.join(checkpoint_dir, 'checkpoint_ep*.pt'))
+        checkpoint_names = [os.path.basename(cp) for cp in checkpoints]
+        
+        return {"checkpoints": sorted(checkpoint_names)}
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error listing checkpoints: {str(e)}")
+        return {"checkpoints": []}
 
 @app.post("/configure-lr-scheduler")
 async def configure_lr_scheduler(config: dict):
@@ -2849,7 +3224,6 @@ def extract_model_state(state_dict):
 def analyze_model_structure(state_dict):
     """
     Analyze the model structure to determine compatibility and required adaptations
-    Handles various model formats and provides detailed information
     """
     result = {
         "compatible": False,
@@ -2863,54 +3237,62 @@ def analyze_model_structure(state_dict):
         # Extract model state
         model_state = extract_model_state(state_dict)
         
-        # Check if it's an empty dictionary
         if not model_state or not isinstance(model_state, dict):
             result["message"] = "Unable to extract model state dictionary. Invalid format."
             return result
             
         # Print some keys for debugging
-        print(f"Keys in model state: {list(model_state.keys())[:5]}...")
+        print(f"Keys in model state: {list(model_state.keys())[:10]}...")
         
         # Check model type by examining keys
         key_set = set([k.split('.')[0] for k in model_state.keys()])
         
-        # Detect Vision Transformer (ViT) models
+        # Detect Vision Transformer (ViT) models like RETFound
         if any(k in ['cls_token', 'pos_embed', 'patch_embed'] for k in key_set):
             result["detected_type"] = "vision-transformer"
+            
+            # For ViT models like RETFound, look for the head layer
+            head_keys = [k for k in model_state.keys() if 'head' in k.lower() and 'weight' in k]
+            if head_keys:
+                head_key = head_keys[0]
+                head_shape = model_state[head_key].shape
+                print(f"Found ViT head layer: {head_key} with shape: {head_shape}")
+                
+                # For RETFound and similar models, the head might be for feature extraction
+                # We should NOT use the original head size if it's 512 (feature dimension)
+                if head_shape[0] == 512 or head_shape[0] > 100:
+                    result["num_classes"] = None  # Don't auto-set large feature dimensions
+                    result["message"] = f"Detected Vision Transformer (likely RETFound). Original head has {head_shape[0]} outputs (likely features). You can specify your desired number of classes."
+                else:
+                    result["num_classes"] = head_shape[0]
+                    result["message"] = f"Detected Vision Transformer with {head_shape[0]} output classes."
+            else:
+                result["message"] = "Detected Vision Transformer. No classification head found - will add custom head."
+                
         # Detect ResNet models
         elif any(k.startswith('layer') for k in model_state.keys()):
             result["detected_type"] = "resnet"
-        # Detect VGG-style models
+            # Look for fc layer
+            if 'fc.weight' in model_state:
+                fc_shape = model_state['fc.weight'].shape
+                result["num_classes"] = fc_shape[0]
+                result["message"] = f"Detected ResNet with {fc_shape[0]} output classes."
+            else:
+                result["message"] = "Detected ResNet architecture."
+                
+        # Other model types...
         elif 'features' in key_set and 'classifier' in key_set:
             result["detected_type"] = "vgg-style"
-        # Detect MobileNet models
         elif 'blocks' in key_set:
             result["detected_type"] = "mobilenet"
-        # Detect BERT/transformer models
-        elif any(k in ['encoder', 'decoder', 'transformer'] for k in key_set):
-            result["detected_type"] = "transformer-nlp"
-        # Detect detection models
-        elif 'backbone' in key_set:
-            result["detected_type"] = "detection-model"
         else:
             result["detected_type"] = "custom"
         
-        # Try to detect number of classes
-        num_classes = detect_num_classes(model_state)
-        result["num_classes"] = num_classes
-        
-        # Determine compatibility and needs
-        model_compatible = any(k.endswith('.weight') for k in model_state.keys())
-        
-        result["compatible"] = model_compatible
+        # Model is compatible if it has weights
+        result["compatible"] = any(k.endswith('.weight') for k in model_state.keys())
         result["adaptation_needed"] = True
         
-        if model_compatible:
-            result["message"] = f"Detected {result['detected_type']} architecture. "
-            if num_classes:
-                result["message"] += f"Found {num_classes} output classes. "
-            result["message"] += "Will attempt adaptation through transfer learning."
-        else:
+        if not result["compatible"]:
             result["message"] = "Model format not recognized. Unable to determine compatibility."
         
         return result
@@ -3582,12 +3964,14 @@ async def upload_csv_paths_with_labels(
             
             # Load the image
             try:
-                from PIL import Image
                 img = Image.open(found_path).convert('RGB')
                 img_tensor = al_manager.transform(img)
                 
                 # Generate unique image ID
                 img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
+                
+                # *** ADD THIS LINE: Store the original path ***
+                al_manager.image_paths[img_id] = found_path
                 
                 # Process based on whether we have a label
                 if label_str:
@@ -3748,6 +4132,38 @@ async def import_project(uploaded_file: UploadFile = File(...)):
             training_metrics = metadata['training_metrics']
             labels_info = metadata.get('labels', {})
             
+            # Get model type information with better handling
+            model_type = project_info.get('model_type', 'resnet50')
+            is_vit = project_info.get('is_vision_transformer', False)
+            model_class = project_info.get('model_class', '')
+            
+            print(f"Importing project with model_type: {model_type}, is_vit: {is_vit}, class: {model_class}")
+            
+            # Load model data
+            if torch.cuda.is_available():
+                model_data = torch.load(project_files['model.pt'])
+            else:
+                model_data = torch.load(project_files['model.pt'], map_location=torch.device('cpu'))
+            
+            model_config = model_data['model_config']
+            model_state = model_data['model_state']
+            
+            # Additional check for ViT from model state if metadata doesn't have it
+            if not is_vit and model_type not in ['vision-transformer', 'custom']:
+                # Check model state for ViT indicators
+                vit_indicators = ['cls_token', 'pos_embed', 'patch_embed']
+                if any(key in model_state.keys() for key in vit_indicators):
+                    print("Detected ViT model from state dict")
+                    is_vit = True
+                    model_type = 'vision-transformer'
+            
+            # Determine number of classes from model structure
+            num_classes = determine_num_classes_from_state(model_state)
+            if not num_classes:
+                num_classes = project_info.get('num_classes', 2)
+            
+            print(f"Detected {num_classes} classes from model structure")
+            
             # Initialize project with imported settings
             al_manager.project_name = project_info['project_name']
             al_manager.episode = project_info['current_episode']
@@ -3759,36 +4175,50 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                 'initial_labeled_ratio': hyperparameters.get('initial_labeled_ratio', 0.1),
             })
             
-            # Load model
-            if torch.cuda.is_available():
-                model_data = torch.load(project_files['model.pt'])
+            # Initialize the correct model type based on what was saved
+            if is_vit or model_type == 'vision-transformer':
+                print("Initializing Vision Transformer model")
+                init_result = al_manager.initialize_project(
+                    project_name=al_manager.project_name,
+                    model_name='vision-transformer',
+                    num_classes=num_classes
+                )
             else:
-                model_data = torch.load(project_files['model.pt'], map_location=torch.device('cpu'))
-            
-            model_config = model_data['model_config']
-            
-            # Initialize model architecture
-            num_classes = model_config.get('num_classes', project_info.get('num_classes', 2))
-            model_type = project_info.get('model_type', 'ResNet').lower()
-            
-            # Map model type names
-            if 'resnet' in model_type:
-                if '18' in model_type:
-                    model_name = 'resnet18'
+                print(f"Initializing {model_type} model")
+                
+                # Map model type names for ResNet variants
+                if 'resnet' in model_type.lower():
+                    if '18' in model_type:
+                        model_name = 'resnet18'
+                    else:
+                        model_name = 'resnet50'
                 else:
-                    model_name = 'resnet50'
-            else:
-                model_name = 'resnet50'  # Default fallback
+                    model_name = 'resnet50'  # Default fallback
+                
+                init_result = al_manager.initialize_project(
+                    project_name=al_manager.project_name,
+                    model_name=model_name,
+                    num_classes=num_classes
+                )
             
-            # Initialize the model
-            init_result = al_manager.initialize_project(
-                project_name=al_manager.project_name,
-                model_name=model_name,
-                num_classes=num_classes
-            )
-            
-            # Load model weights
-            al_manager.model.load_state_dict(model_data['model_state'])
+            # Load model weights with structure adaptation
+            try:
+                al_manager.model.load_state_dict(model_state, strict=True)
+                print("Model loaded with strict=True")
+            except RuntimeError as e:
+                print(f"Strict loading failed: {e}")
+                print("Attempting to adapt model structure...")
+                
+                # Try to adapt the model state dict
+                adapted_state = adapt_model_state_dict(model_state, al_manager.model.state_dict())
+                missing_keys, unexpected_keys = al_manager.model.load_state_dict(adapted_state, strict=False)
+                
+                if missing_keys:
+                    print(f"Missing keys after adaptation: {missing_keys}")
+                if unexpected_keys:
+                    print(f"Unexpected keys after adaptation: {unexpected_keys}")
+                
+                print("Model loaded with adapted state dict")
             
             # Restore training metrics
             al_manager.plot_episode_xvalues = training_metrics['episode_accuracies']['episodes']
@@ -3797,7 +4227,7 @@ async def import_project(uploaded_file: UploadFile = File(...)):
             al_manager.plot_epoch_yvalues = training_metrics['epoch_losses']['losses']
             al_manager.episode_history = training_metrics.get('episode_history', [])
             
-            # Update automated trainer config
+            # Update automated trainer config if it exists
             if 'automated_trainer' in globals():
                 automated_trainer.training_config.update({
                     'sampling_strategy': hyperparameters.get('sampling_strategy', 'least_confidence'),
@@ -3811,20 +4241,135 @@ async def import_project(uploaded_file: UploadFile = File(...)):
             al_manager.unlabeled_data.clear()
             al_manager.validation_data.clear()
             
+            # Initialize image_paths if it doesn't exist
+            if not hasattr(al_manager, 'image_paths'):
+                al_manager.image_paths = {}
+            else:
+                al_manager.image_paths.clear()
+            
             # Create output directory
             al_manager.output_dir = os.path.join("output", al_manager.project_name, 
                 datetime.now().strftime("%Y%m%d_%H%M%S"))
             os.makedirs(al_manager.output_dir, exist_ok=True)
             
+            # **NEW: Try to load existing annotations automatically**
+            loaded_images_count = 0
+            project_ready = False
+            
+            if 'annotations.csv' in project_files:
+                print("Found annotations.csv, attempting to load existing data...")
+                try:
+                    # Read the CSV file
+                    import pandas as pd
+                    df = pd.read_csv(project_files['annotations.csv'])
+                    
+                    print(f"Annotations CSV contains {len(df)} entries")
+                    
+                    # Try different common directory locations for images
+                    search_paths = [
+                        os.getcwd(),  # Current working directory
+                        os.path.join(os.getcwd(), 'data'),
+                        os.path.join(os.getcwd(), 'images'),
+                        os.path.join(os.getcwd(), 'uploads'),
+                        extract_dir,  # Inside the extracted project
+                        os.path.dirname(project_files['annotations.csv'])  # Same dir as CSV
+                    ]
+                    
+                    failed_paths = []
+                    
+                    for _, row in df.iterrows():
+                        try:
+                            original_path = row['image_path']
+                            image_id = int(row['image_id'])
+                            label_index = row['label_index'] if pd.notna(row['label_index']) else None
+                            split_type = row['split']
+                            
+                            # Try to find the image in various locations
+                            image_found = False
+                            actual_path = None
+                            
+                            # First try the original path
+                            if os.path.exists(original_path):
+                                actual_path = original_path
+                                image_found = True
+                            else:
+                                # Try just the filename in various search paths
+                                filename = os.path.basename(original_path)
+                                for search_path in search_paths:
+                                    candidate_path = os.path.join(search_path, filename)
+                                    if os.path.exists(candidate_path):
+                                        actual_path = candidate_path
+                                        image_found = True
+                                        break
+                            
+                            if image_found:
+                                # Load the image
+                                img = Image.open(actual_path).convert('RGB')
+                                img_tensor = al_manager.transform(img)
+                                
+                                # Store the actual path we found
+                                al_manager.image_paths[image_id] = actual_path
+                                
+                                # Place in appropriate dataset
+                                if split_type == 'validation':
+                                    al_manager.validation_data[image_id] = (img_tensor, int(label_index) if label_index is not None else None)
+                                elif label_index is not None:
+                                    al_manager.labeled_data[image_id] = (img_tensor, int(label_index))
+                                else:
+                                    al_manager.unlabeled_data[image_id] = img_tensor
+                                
+                                loaded_images_count += 1
+                            else:
+                                failed_paths.append(original_path)
+                                
+                        except Exception as e:
+                            print(f"Error loading image {row.get('image_path', 'unknown')}: {str(e)}")
+                            failed_paths.append(row.get('image_path', 'unknown'))
+                            continue
+                    
+                    print(f"Successfully loaded {loaded_images_count} images from annotations")
+                    if failed_paths:
+                        print(f"Failed to load {len(failed_paths)} images. First few: {failed_paths[:5]}")
+                    
+                    # Determine if project is ready
+                    project_ready = loaded_images_count > 0
+                    
+                except Exception as csv_error:
+                    print(f"Error loading annotations.csv: {str(csv_error)}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Store the correct model type for return
+            final_model_type = 'vision-transformer' if is_vit else model_type
+            
+            # Prepare the final message
+            if project_ready:
+                message = f"Project '{al_manager.project_name}' ({final_model_type}) imported successfully with {loaded_images_count} existing images loaded. Project is ready for active learning!"
+            else:
+                message = f"Project '{al_manager.project_name}' ({final_model_type}) imported successfully. Upload new images to continue training with the existing model."
+            
             return {
                 "status": "success",
-                "project_info": project_info,
-                "dataset_stats": dataset_stats,
+                "project_info": {
+                    **project_info,
+                    "model_type": final_model_type,  # Return the correct model type
+                    "is_vision_transformer": is_vit,
+                    "num_classes": num_classes
+                },
+                "dataset_stats": {
+                    **dataset_stats,
+                    "current_labeled": len(al_manager.labeled_data),
+                    "current_unlabeled": len(al_manager.unlabeled_data),
+                    "current_validation": len(al_manager.validation_data),
+                    "loaded_from_annotations": loaded_images_count
+                },
                 "hyperparameters": hyperparameters,
                 "labels": labels_info,
                 "training_config": automated_trainer.training_config if 'automated_trainer' in globals() else {},
                 "model_ready": True,
-                "message": f"Project '{al_manager.project_name}' imported successfully. Upload new images to continue training with the existing model."
+                "project_ready": project_ready,  # New flag
+                "images_loaded": loaded_images_count > 0,
+                "message": message
             }
         
     except HTTPException:
@@ -3834,6 +4379,419 @@ async def import_project(uploaded_file: UploadFile = File(...)):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to import project: {str(e)}")
+
+def determine_num_classes_from_state(state_dict):
+    """Determine number of classes from model state dict"""
+    try:
+        # Check for different classifier layer structures
+        
+        # ResNet style fc layers
+        if 'fc.weight' in state_dict:
+            return state_dict['fc.weight'].shape[0]
+        elif 'fc.1.weight' in state_dict:
+            return state_dict['fc.1.weight'].shape[0]
+        elif 'fc.2.weight' in state_dict:
+            return state_dict['fc.2.weight'].shape[0]
+        
+        # ViT style classifiers
+        elif 'classifier.weight' in state_dict:
+            return state_dict['classifier.weight'].shape[0]
+        elif 'head.weight' in state_dict:
+            return state_dict['head.weight'].shape[0]
+        
+        # Look for any layer with 'fc' in the name
+        fc_keys = [k for k in state_dict.keys() if 'fc' in k and 'weight' in k]
+        if fc_keys:
+            return state_dict[fc_keys[0]].shape[0]
+        
+        # Look for any layer with 'classifier' in the name
+        classifier_keys = [k for k in state_dict.keys() if 'classifier' in k and 'weight' in k]
+        if classifier_keys:
+            return state_dict[classifier_keys[0]].shape[0]
+        
+        return None
+    except Exception as e:
+        print(f"Error determining num_classes: {e}")
+        return None
+
+
+def adapt_model_state_dict(saved_state, target_state):
+    """Adapt saved model state dict to match target model structure"""
+    adapted_state = {}
+    
+    print("Adapting model state dict...")
+    print(f"Saved state keys sample: {list(saved_state.keys())[:10]}...")
+    print(f"Target state keys sample: {list(target_state.keys())[:10]}...")
+    
+    # Copy all non-classifier layers directly
+    for key in saved_state.keys():
+        if not any(classifier_key in key for classifier_key in ['fc.', 'classifier.', 'head.']):
+            if key in target_state:
+                adapted_state[key] = saved_state[key]
+            else:
+                print(f"Skipping key not in target: {key}")
+    
+    # Handle classifier layer mapping
+    target_classifier_keys = [k for k in target_state.keys() if any(c in k for c in ['fc.', 'classifier.', 'head.'])]
+    saved_classifier_keys = [k for k in saved_state.keys() if any(c in k for c in ['fc.', 'classifier.', 'head.'])]
+    
+    print(f"Target classifier keys: {target_classifier_keys}")
+    print(f"Saved classifier keys: {saved_classifier_keys}")
+    
+    # Map different classifier structures
+    if 'fc.weight' in target_state and 'fc.bias' in target_state:
+        # Target expects simple Linear layer
+        if 'fc.1.weight' in saved_state and 'fc.1.bias' in saved_state:
+            adapted_state['fc.weight'] = saved_state['fc.1.weight']
+            adapted_state['fc.bias'] = saved_state['fc.1.bias']
+            print("Mapped fc.1 -> fc")
+        elif 'fc.2.weight' in saved_state and 'fc.2.bias' in saved_state:
+            adapted_state['fc.weight'] = saved_state['fc.2.weight']
+            adapted_state['fc.bias'] = saved_state['fc.2.bias']
+            print("Mapped fc.2 -> fc")
+        elif 'fc.weight' in saved_state and 'fc.bias' in saved_state:
+            adapted_state['fc.weight'] = saved_state['fc.weight']
+            adapted_state['fc.bias'] = saved_state['fc.bias']
+            print("Direct fc mapping")
+        elif 'classifier.weight' in saved_state and 'classifier.bias' in saved_state:
+            adapted_state['fc.weight'] = saved_state['classifier.weight']
+            adapted_state['fc.bias'] = saved_state['classifier.bias']
+            print("Mapped classifier -> fc")
+    
+    elif 'fc.1.weight' in target_state and 'fc.1.bias' in target_state:
+        # Target expects Sequential with Linear at index 1
+        if 'fc.weight' in saved_state and 'fc.bias' in saved_state:
+            adapted_state['fc.1.weight'] = saved_state['fc.weight']
+            adapted_state['fc.1.bias'] = saved_state['fc.bias']
+            print("Mapped fc -> fc.1")
+        elif 'fc.1.weight' in saved_state and 'fc.1.bias' in saved_state:
+            adapted_state['fc.1.weight'] = saved_state['fc.1.weight']
+            adapted_state['fc.1.bias'] = saved_state['fc.1.bias']
+            print("Direct fc.1 mapping")
+    
+    elif 'classifier.weight' in target_state and 'classifier.bias' in target_state:
+        # Target expects ViT-style classifier
+        if 'fc.weight' in saved_state and 'fc.bias' in saved_state:
+            adapted_state['classifier.weight'] = saved_state['fc.weight']
+            adapted_state['classifier.bias'] = saved_state['fc.bias']
+            print("Mapped fc -> classifier")
+        elif 'fc.1.weight' in saved_state and 'fc.1.bias' in saved_state:
+            adapted_state['classifier.weight'] = saved_state['fc.1.weight']
+            adapted_state['classifier.bias'] = saved_state['fc.1.bias']
+            print("Mapped fc.1 -> classifier")
+        elif 'classifier.weight' in saved_state and 'classifier.bias' in saved_state:
+            adapted_state['classifier.weight'] = saved_state['classifier.weight']
+            adapted_state['classifier.bias'] = saved_state['classifier.bias']
+            print("Direct classifier mapping")
+    
+    print(f"Adapted state final keys: {len(adapted_state)} keys")
+    return adapted_state
+
+def inspect_and_save_model_info(model, output_path="model_inspection.json"):
+    """
+    Comprehensive model inspection - saves all model info to JSON for debugging
+    """
+    try:
+        state_dict = model.state_dict()
+        
+        # Collect all model information
+        model_info = {
+            "basic_info": {
+                "class_name": model.__class__.__name__,
+                "module_name": model.__class__.__module__,
+                "model_type": str(type(model)),
+                "model_repr": str(model)[:1000] + "..." if len(str(model)) > 1000 else str(model)
+            },
+            "state_dict_analysis": {
+                "total_parameters": len(state_dict),
+                "parameter_shapes": {k: list(v.shape) for k, v in state_dict.items()},
+                "parameter_names": list(state_dict.keys()),
+                "first_20_keys": list(state_dict.keys())[:20],
+                "last_20_keys": list(state_dict.keys())[-20:]
+            },
+            "architecture_detection": {
+                "has_resnet_layers": any(key.startswith('layer') for key in state_dict.keys()),
+                "has_vit_indicators": any(indicator in key for key in state_dict.keys() 
+                                        for indicator in ['cls_token', 'pos_embed', 'patch_embed', 'blocks']),
+                "has_attention": any('attn' in key or 'attention' in key for key in state_dict.keys()),
+                "has_transformer": any('transformer' in key for key in state_dict.keys()),
+                "resnet_layer_keys": [k for k in state_dict.keys() if k.startswith('layer')],
+                "vit_keys": [k for k in state_dict.keys() if any(indicator in k for indicator in ['cls_token', 'pos_embed', 'patch_embed', 'blocks'])],
+                "attention_keys": [k for k in state_dict.keys() if 'attn' in k or 'attention' in k],
+                "classifier_keys": [k for k in state_dict.keys() if any(c in k for c in ['classifier', 'head', 'fc'])]
+            },
+            "layer_analysis": {
+                "conv_layers": [k for k in state_dict.keys() if 'conv' in k and 'weight' in k],
+                "linear_layers": [k for k in state_dict.keys() if any(layer_type in k for layer_type in ['fc', 'linear', 'classifier', 'head']) and 'weight' in k],
+                "norm_layers": [k for k in state_dict.keys() if any(norm_type in k for norm_type in ['bn', 'norm', 'layer_norm']) and 'weight' in k],
+                "embedding_layers": [k for k in state_dict.keys() if 'embed' in k]
+            },
+            "model_structure": {},
+            "pytorch_model_info": {}
+        }
+        
+        # Try to get model structure
+        try:
+            # Get model children and modules
+            children = list(model.children())
+            named_children = list(model.named_children())
+            modules = list(model.modules())
+            named_modules = list(model.named_modules())
+            
+            model_info["model_structure"] = {
+                "num_children": len(children),
+                "num_modules": len(modules),
+                "named_children": [(name, str(type(child))) for name, child in named_children],
+                "child_types": [str(type(child)) for child in children],
+                "has_fc": hasattr(model, 'fc'),
+                "has_classifier": hasattr(model, 'classifier'),
+                "has_head": hasattr(model, 'head'),
+                "has_features": hasattr(model, 'features')
+            }
+            
+            # Get specific layer info if they exist
+            if hasattr(model, 'fc'):
+                fc_layer = model.fc
+                model_info["model_structure"]["fc_info"] = {
+                    "type": str(type(fc_layer)),
+                    "repr": str(fc_layer),
+                    "has_in_features": hasattr(fc_layer, 'in_features'),
+                    "has_out_features": hasattr(fc_layer, 'out_features'),
+                    "in_features": getattr(fc_layer, 'in_features', None),
+                    "out_features": getattr(fc_layer, 'out_features', None)
+                }
+            
+            if hasattr(model, 'classifier'):
+                classifier = model.classifier
+                model_info["model_structure"]["classifier_info"] = {
+                    "type": str(type(classifier)),
+                    "repr": str(classifier),
+                    "has_in_features": hasattr(classifier, 'in_features'),
+                    "has_out_features": hasattr(classifier, 'out_features'),
+                    "in_features": getattr(classifier, 'in_features', None),
+                    "out_features": getattr(classifier, 'out_features', None)
+                }
+            
+            if hasattr(model, 'head'):
+                head = model.head
+                model_info["model_structure"]["head_info"] = {
+                    "type": str(type(head)),
+                    "repr": str(head),
+                    "has_in_features": hasattr(head, 'in_features'),
+                    "has_out_features": hasattr(head, 'out_features'),
+                    "in_features": getattr(head, 'in_features', None),
+                    "out_features": getattr(head, 'out_features', None)
+                }
+                
+        except Exception as struct_error:
+            model_info["model_structure"]["error"] = str(struct_error)
+        
+        # Try to get PyTorch model info
+        try:
+            import torch
+            model_info["pytorch_model_info"] = {
+                "device": str(next(model.parameters()).device) if list(model.parameters()) else "no_parameters",
+                "dtype": str(next(model.parameters()).dtype) if list(model.parameters()) else "no_parameters",
+                "requires_grad": any(p.requires_grad for p in model.parameters()),
+                "total_parameters": sum(p.numel() for p in model.parameters()),
+                "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
+                "is_training": model.training
+            }
+        except Exception as torch_error:
+            model_info["pytorch_model_info"]["error"] = str(torch_error)
+        
+        # Try to determine the actual model type
+        detection_result = {
+            "detected_type": "unknown",
+            "confidence": "low",
+            "reasoning": []
+        }
+        
+        # ResNet detection
+        if model_info["architecture_detection"]["has_resnet_layers"]:
+            detection_result["detected_type"] = "resnet"
+            detection_result["confidence"] = "high"
+            detection_result["reasoning"].append("Found ResNet layer structure (layer1, layer2, etc.)")
+            
+            # Determine ResNet variant
+            if model_info["model_structure"].get("fc_info", {}).get("in_features") == 512:
+                detection_result["variant"] = "resnet18"
+            elif model_info["model_structure"].get("fc_info", {}).get("in_features") == 2048:
+                detection_result["variant"] = "resnet50"
+        
+        # ViT detection
+        elif model_info["architecture_detection"]["has_vit_indicators"]:
+            detection_result["detected_type"] = "vision_transformer"
+            detection_result["confidence"] = "high"
+            detection_result["reasoning"].append("Found ViT indicators (cls_token, pos_embed, patch_embed, blocks)")
+        
+        # Transformer detection
+        elif model_info["architecture_detection"]["has_attention"]:
+            detection_result["detected_type"] = "transformer"
+            detection_result["confidence"] = "medium"
+            detection_result["reasoning"].append("Found attention mechanisms")
+        
+        # Class name detection
+        class_name = model_info["basic_info"]["class_name"].lower()
+        if 'resnet' in class_name:
+            detection_result["class_name_suggests"] = "resnet"
+        elif any(vit_term in class_name for vit_term in ['vit', 'vision', 'transformer']):
+            detection_result["class_name_suggests"] = "vision_transformer"
+        else:
+            detection_result["class_name_suggests"] = "unknown"
+        
+        model_info["detection_result"] = detection_result
+        
+        # Save to JSON file
+        import json
+        with open(output_path, 'w') as f:
+            json.dump(model_info, f, indent=2, default=str)
+        
+        print(f"Model inspection saved to: {output_path}")
+        print(f"Detected model type: {detection_result['detected_type']} (confidence: {detection_result['confidence']})")
+        
+        return model_info
+        
+    except Exception as e:
+        error_info = {
+            "error": str(e),
+            "basic_class_name": model.__class__.__name__ if hasattr(model, '__class__') else "unknown"
+        }
+        
+        import json
+        with open(output_path, 'w') as f:
+            json.dump(error_info, f, indent=2)
+        
+        print(f"Error during model inspection: {e}")
+        return error_info
+
+def determine_model_type_for_export(model):
+    """Determine the model type for export based on model structure"""
+    
+    # Get model state dict and class info
+    state_dict = model.state_dict()
+    class_name = model.__class__.__name__
+    
+    
+    print(f"=== MODEL TYPE DETECTION DEBUG ===")
+    print(f"Model class name: {class_name}")
+    print(f"State dict keys (first 10): {list(state_dict.keys())[:10]}")
+    
+    # Check model class name first (most reliable)
+    if any(vit_indicator in class_name for vit_indicator in ['ViT', 'Vision', 'Transformer', 'SimpleViTClassifier']):
+        print("Detected ViT from class name")
+        return 'vision-transformer'
+    
+    # Check for ViT indicators in state dict keys
+    vit_indicators = ['cls_token', 'pos_embed', 'patch_embed', 'blocks.', 'norm.weight', 'head.weight']
+    found_vit_keys = [key for key in state_dict.keys() if any(indicator in key for indicator in vit_indicators)]
+    
+    if found_vit_keys:
+        print(f"Detected ViT from state dict keys: {found_vit_keys[:5]}")
+        return 'vision-transformer'
+    
+    # Check for transformer-like structure (attention layers)
+    attention_keys = [key for key in state_dict.keys() if any(pattern in key for pattern in ['attn', 'attention', 'self_attention'])]
+    if attention_keys:
+        print(f"Detected transformer from attention keys: {attention_keys[:3]}")
+        return 'vision-transformer'
+    
+    # Check for ResNet structure
+    if any(key.startswith('layer') for key in state_dict.keys()):
+        print("Detected ResNet from layer structure")
+        # Determine ResNet variant
+        feature_count = None
+        for key in state_dict.keys():
+            if ('fc' in key and 'weight' in key) or ('classifier' in key and 'weight' in key):
+                weight_shape = state_dict[key].shape
+                if len(weight_shape) == 2:
+                    feature_count = weight_shape[1]
+                    break
+        
+        if feature_count == 512:
+            return 'resnet18'
+        elif feature_count == 2048:
+            return 'resnet50'
+        else:
+            return 'resnet50'  # Default
+    
+    # Check for other architectures
+    if 'features' in [key.split('.')[0] for key in state_dict.keys()]:
+        print("Detected VGG-style model")
+        return 'vgg'
+    
+    # If we can't determine, check the final classifier structure
+    classifier_keys = [k for k in state_dict.keys() if any(c in k for c in ['classifier', 'head', 'fc'])]
+    if classifier_keys:
+        print(f"Found classifier keys: {classifier_keys}")
+        # If it has a simple classifier but no clear architecture, assume custom ViT
+        if not any(key.startswith('layer') for key in state_dict.keys()):
+            print("Assuming custom ViT due to classifier without ResNet layers")
+            return 'vision-transformer'
+    
+    print("Defaulting to custom")
+    return 'custom'
+
+@app.post("/load-existing-annotations")
+async def load_existing_annotations():
+    """Load existing annotations from imported project and start active learning"""
+    try:
+        if not al_manager.project_name:
+            raise HTTPException(status_code=400, detail="No project loaded")
+        
+        # Check if we have any data to work with
+        total_data = len(al_manager.labeled_data) + len(al_manager.unlabeled_data) + len(al_manager.validation_data)
+        
+        if total_data == 0:
+            return {
+                "status": "no_data",
+                "message": "No existing data found in project. Please upload new images."
+            }
+        
+        # If we have unlabeled data, get a batch for active learning
+        if len(al_manager.unlabeled_data) > 0:
+            try:
+                # Use the configured sampling strategy and batch size
+                strategy = getattr(automated_trainer, 'training_config', {}).get('sampling_strategy', 'least_confidence')
+                batch_size = getattr(automated_trainer, 'training_config', {}).get('batch_size', 32)
+                
+                batch = al_manager.get_next_batch(strategy, min(batch_size, len(al_manager.unlabeled_data)))
+                
+                return {
+                    "status": "success", 
+                    "message": f"Loaded existing project data. Ready for active learning with {len(batch)} images.",
+                    "data_stats": {
+                        "labeled": len(al_manager.labeled_data),
+                        "unlabeled": len(al_manager.unlabeled_data), 
+                        "validation": len(al_manager.validation_data)
+                    },
+                    "batch_ready": True
+                }
+            except Exception as e:
+                return {
+                    "status": "success",
+                    "message": f"Loaded existing project data, but couldn't get batch: {str(e)}",
+                    "data_stats": {
+                        "labeled": len(al_manager.labeled_data),
+                        "unlabeled": len(al_manager.unlabeled_data),
+                        "validation": len(al_manager.validation_data)
+                    },
+                    "batch_ready": False
+                }
+        else:
+            return {
+                "status": "success",
+                "message": "Project loaded successfully. All data is labeled - ready for final training.",
+                "data_stats": {
+                    "labeled": len(al_manager.labeled_data),
+                    "unlabeled": len(al_manager.unlabeled_data),
+                    "validation": len(al_manager.validation_data)
+                },
+                "batch_ready": False
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load existing annotations: {str(e)}")
 
 @app.post("/update-project-labels")
 async def update_project_labels(request: dict):

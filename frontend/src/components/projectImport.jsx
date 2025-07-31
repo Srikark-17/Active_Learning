@@ -16,6 +16,7 @@ const ProjectImport = ({ onImportSuccess, onError }) => {
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState(null);
   const [importStatus, setImportStatus] = useState(null);
+  const [imported, setImported] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
   const [projectInfo, setProjectInfo] = useState(null);
 
@@ -57,6 +58,7 @@ const ProjectImport = ({ onImportSuccess, onError }) => {
       );
 
       // Call the success callback with import result
+      setImported(true);
       onImportSuccess({
         project_name: result.project_info.project_name,
         model_type: result.project_info.model_type || "resnet50",
@@ -166,7 +168,7 @@ const ProjectImport = ({ onImportSuccess, onError }) => {
         <Button
           className="w-full"
           onClick={handleImportProject}
-          disabled={!selectedFile || isImporting}
+          disabled={!selectedFile || isImporting || imported}
         >
           {isImporting ? (
             <span className="flex items-center gap-2">
