@@ -11,7 +11,7 @@ import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { RadioGroup, RadioGroupItem } from "../components/ui/radio-group";
-import { AlertCircle, Download, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, Download, Plus, Trash2, CheckCircle, Info } from "lucide-react";
 import {
   Tabs,
   TabsContent,
@@ -43,7 +43,7 @@ const ActiveLearningUI = () => {
   const [activeTab, setActiveTab] = useState("new");
   const [loadedImages, setLoadedImages] = useState([]);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
-  const [imageLoadError, setImageLoadError] = useState(null);
+  const [message, setMessage] = useState({ text: null, type: 'error' });
 
   // Active Learning State
   const [samplingStrategy, setSamplingStrategy] = useState("least_confidence");
@@ -101,6 +101,46 @@ const ActiveLearningUI = () => {
   });
   const [lrHistory, setLrHistory] = useState();
   const fileDataRef = useRef(null);
+
+  const setErrorMessage = (text) => {
+    setMessage({ text, type: 'error' });
+  };
+
+  const setSuccessMessage = (text) => {
+    setMessage({ text, type: 'success' });
+  };
+
+  const setInfoMessage = (text) => {
+    setMessage({ text, type: 'info' });
+  };
+
+  const clearMessage = () => {
+    setMessage({ text: null, type: 'error' });
+  };
+  // Helper function to get the appropriate alert variant and icon
+  const getAlertProps = (messageType) => {
+    switch (messageType) {
+      case 'success':
+        return {
+          variant: 'default',
+          className: 'border-green-200 bg-green-50 text-green-800',
+          icon: CheckCircle
+        };
+      case 'info':
+        return {
+          variant: 'default',
+          className: 'border-blue-200 bg-blue-50 text-blue-800',
+          icon: Info
+        };
+      case 'error':
+      default:
+        return {
+          variant: 'destructive',
+          className: '',
+          icon: AlertCircle
+        };
+    }
+  };
 
   const getFilteredPredictions = (rawPredictions, userLabels) => {
     if (!rawPredictions || !userLabels || userLabels.length === 0) {
@@ -325,12 +365,12 @@ const ActiveLearningUI = () => {
         img.onload = () => {
           console.log("First image loaded successfully");
           setCurrentImage(imageUrl);
-          setImageLoadError(null);
+          setSuccessMessage(null);
         };
 
         img.onerror = (e) => {
           console.error("Image loading error:", e);
-          setImageLoadError(
+          setErrorMessage(
             `Failed to load image (ID: ${batch[0].image_id}). Please check image paths.`
           );
         };
@@ -338,11 +378,11 @@ const ActiveLearningUI = () => {
         img.src = imageUrl;
         setCurrentImageIndex(0);
       } else {
-        setImageLoadError("Received empty batch. No images to display.");
+        setErrorMessage("Received empty batch. No images to display.");
       }
     } catch (error) {
       console.error("getBatch error:", error);
-      setImageLoadError("Failed to get next batch: " + error.message);
+      setErrorMessage("Failed to get next batch: " + error.message);
 
       // Try fallback to random sampling
       try {
@@ -363,15 +403,15 @@ const ActiveLearningUI = () => {
           );
           setCurrentImage(imageUrl);
           setCurrentImageIndex(0);
-          setImageLoadError("Using random sampling as fallback");
+          setInfoMessage("Using random sampling as fallback");
         } else {
-          setImageLoadError(
+          setErrorMessage(
             "Failed to get any images. Try using a smaller batch size."
           );
         }
       } catch (fallbackError) {
         console.error("Fallback getBatch error:", fallbackError);
-        setImageLoadError(
+        setErrorMessage(
           "Failed to get batch even with fallback strategy. Try restarting the application."
         );
       }
@@ -432,7 +472,7 @@ const ActiveLearningUI = () => {
           detectedLabels: detectedLabels,
         });
 
-        setImageLoadError(
+        setSuccessMessage(
           "CSV with labels processed. Click 'Start Project' to begin."
         );
         return;
@@ -440,7 +480,7 @@ const ActiveLearningUI = () => {
 
       // Store the loaded files first, before any API calls
       setLoadedImages(files);
-      setImageLoadError(null);
+      setInfoMessage(null);
 
       if (detectedLabels && detectedLabels.length > 0) {
         console.log("Auto-populating labels from CSV:", detectedLabels);
@@ -472,7 +512,7 @@ const ActiveLearningUI = () => {
       }
     } catch (error) {
       console.error("Upload error:", error);
-      setImageLoadError("Failed to upload: " + error.message);
+      setErrorMessage("Failed to upload: " + error.message);
     }
   };
 
@@ -517,7 +557,7 @@ const ActiveLearningUI = () => {
       if (batch_complete) {
         console.log("Starting episode training...");
         setIsRetraining(true);
-        setImageLoadError("Batch complete - Starting episode training...");
+        setInfoMessage("Batch complete - Starting episode training...");
 
         try {
           const episodeResult = await activeLearnAPI.startEpisode(
@@ -531,24 +571,24 @@ const ActiveLearningUI = () => {
           }
 
           await handleStartNewBatch();
-          setImageLoadError("Episode training complete - New batch loaded");
+          setInfoMessage("Episode training complete - New batch loaded");
           setIsRetraining(false);
         } catch (error) {
           console.error("Episode training error:", error);
-          setImageLoadError("Episode training error: " + error.message);
+          setErrorMessage("Episode training error: " + error.message);
           setIsRetraining(false);
         }
       } else {
         handleNextImage();
       }
     } catch (error) {
-      setImageLoadError("Failed to submit label: " + error.message);
+      setErrorMessage("Failed to submit label: " + error.message);
     }
   };
 
   const handleStartNewBatch = async () => {
     try {
-      setImageLoadError("Getting next batch...");
+      setInfoMessage("Getting next batch...");
       const batchResult = await getNextBatch();
 
       setBatchStats({
@@ -563,9 +603,9 @@ const ActiveLearningUI = () => {
       setSelectedLabel("");
       setIsBatchInProgress(false);
       setCurrentImageIndex(0);
-      setImageLoadError(null);
+      setErrorMessage(null);
     } catch (error) {
-      setImageLoadError("Failed to start new batch: " + error.message);
+      setErrorMessage("Failed to start new batch: " + error.message);
     }
   };
 
@@ -606,7 +646,7 @@ const ActiveLearningUI = () => {
   // Complete handleStartProject function for annotation.jsx
   const handleStartProject = async () => {
     if (!projectName || labels.length === 0) {
-      setImageLoadError("Please set project name and labels");
+      setErrorMessage("Please set project name and labels");
       return;
     }
 
@@ -619,13 +659,13 @@ const ActiveLearningUI = () => {
       (fileDataRef.current && fileDataRef.current.csvFile);
 
     if (!hasFiles) {
-      setImageLoadError("Please upload images or a CSV file with image paths");
+      setErrorMessage("Please upload images or a CSV file with image paths");
       return;
     }
 
     try {
       setIsLoading(true);
-      setImageLoadError(null);
+      setErrorMessage(null);
 
       // Initialize project if not already done (for imported projects, this is already done)
       if (!isInitialized) {
@@ -648,7 +688,7 @@ const ActiveLearningUI = () => {
 
       // Handle CSV with labels using the ref
       if (fileDataRef.current?.type === "csv-with-labels") {
-        setImageLoadError(
+        setInfoMessage(
           `Processing CSV with annotations (using column: ${fileDataRef.current.labelColumn})...`
         );
 
@@ -673,13 +713,13 @@ const ActiveLearningUI = () => {
           expectedLabelMapping
         );
 
-        setImageLoadError(
+        setSuccessMessage(
           `Successfully loaded ${result.stats.total} images (${result.stats.labeled} with labels, ${result.stats.unlabeled} unlabeled, ${result.stats.validation} for validation)`
         );
 
         // Start training if we have enough labeled data
         if (result.stats.labeled > 0) {
-          setImageLoadError("Starting initial training with annotated data...");
+          setInfoMessage("Starting initial training with annotated data...");
           try {
             const episodeResult = await activeLearnAPI.startEpisode(
               epochs,
@@ -688,16 +728,16 @@ const ActiveLearningUI = () => {
             if (episodeResult.final_val_acc) {
               setValidationAccuracy(episodeResult.final_val_acc);
             }
-            setImageLoadError("Initial training complete");
+            setSuccessMessage("Initial training complete");
           } catch (error) {
             console.error("Initial training error:", error);
-            setImageLoadError("Initial training error: " + error.message);
+            setErrorMessage("Initial training error: " + error.message);
           }
         }
       }
       // Handle combined upload with labels
       else if (loadedImages.type === "combined-with-labels") {
-        setImageLoadError(
+        setInfoMessage(
           `Processing CSV with labels (${loadedImages.labelColumn}) and images together...`
         );
         const result = await activeLearnAPI.uploadCombinedWithLabels(
@@ -728,13 +768,13 @@ const ActiveLearningUI = () => {
           }
         }
 
-        setImageLoadError(
+        setSuccessMessage(
           `Successfully loaded ${result.stats.total} images (${result.stats.labeled} with labels, ${result.stats.unlabeled} unlabeled, ${result.stats.validation} for validation)`
         );
 
         // Start training if we have enough labeled data
         if (result.stats.labeled > 0) {
-          setImageLoadError("Starting initial training with annotated data...");
+          setInfoMessage("Starting initial training with annotated data...");
           try {
             const episodeResult = await activeLearnAPI.startEpisode(
               epochs,
@@ -743,28 +783,28 @@ const ActiveLearningUI = () => {
             if (episodeResult.final_val_acc) {
               setValidationAccuracy(episodeResult.final_val_acc);
             }
-            setImageLoadError("Initial training complete");
+            setSuccessMessage("Initial training complete");
           } catch (error) {
             console.error("Initial training error:", error);
-            setImageLoadError("Initial training error: " + error.message);
+            setErrorMessage("Initial training error: " + error.message);
           }
         }
       }
       // Handle combined upload without labels
       else if (loadedImages.type === "combined") {
-        setImageLoadError("Processing CSV and image files together...");
+        setInfoMessage("Processing CSV and image files together...");
         const result = await activeLearnAPI.uploadCombined(
           loadedImages.files,
           valSplit,
           initialLabeledRatio
         );
-        setImageLoadError(
+        setSuccessMessage(
           `Successfully processed ${result.split_info.total_images} images`
         );
       }
       // Handle CSV-only upload
       else if (loadedImages.type === "csv") {
-        setImageLoadError("Processing CSV file with image paths...");
+        setInfoMessage("Processing CSV file with image paths...");
 
         const csvFile = loadedImages.file;
         const delimiter = loadedImages.delimiter || ",";
@@ -776,24 +816,24 @@ const ActiveLearningUI = () => {
             valSplit,
             initialLabeledRatio
           );
-          setImageLoadError(
+          setSuccessMessage(
             `Successfully loaded ${result.split_info.total_images} images from CSV`
           );
         } catch (error) {
           console.error("CSV upload error:", error);
-          setImageLoadError(
+          setErrorMessage(
             `Error processing CSV: ${error.message}. Try uploading images directly or using the "Upload CSV + Images Together" option.`
           );
           return;
         }
       } else if (Array.isArray(loadedImages) && loadedImages.length > 0) {
-        setImageLoadError("Setting up initial dataset...");
+        setInfoMessage("Setting up initial dataset...");
         const result = await activeLearnAPI.uploadData(
           loadedImages,
           valSplit,
           initialLabeledRatio
         );
-        setImageLoadError(
+        setSuccessMessage(
           `Successfully processed ${
             result.split_info?.total_images || loadedImages.length
           } images`
@@ -801,13 +841,13 @@ const ActiveLearningUI = () => {
       }
 
       // **NEW: Automatically get first batch after processing images**
-      setImageLoadError(
+      setSuccessMessage(
         "Processing complete. Getting first batch for active learning..."
       );
 
       try {
         await getNextBatch();
-        setImageLoadError(
+        setSuccessMessage(
           `Ready for active learning! ${
             validationAccuracy
               ? `Model accuracy: ${validationAccuracy.toFixed(2)}%. `
@@ -816,7 +856,7 @@ const ActiveLearningUI = () => {
         );
       } catch (batchError) {
         console.error("Error getting first batch:", batchError);
-        setImageLoadError(
+        setSuccessMessage(
           "Images processed successfully, but couldn't get first batch. Try clicking 'Start New Batch' in the status section."
         );
       }
@@ -832,7 +872,7 @@ const ActiveLearningUI = () => {
           "Could not find or process any images from the CSV"
         )
       ) {
-        setImageLoadError(
+        setErrorMessage(
           `Image file path issue: The system couldn't find the image files referenced in your CSV. 
 This usually happens when the paths in the CSV don't match where images are stored on your system.
 
@@ -843,11 +883,11 @@ Possible solutions:
 4. Try using just filenames (without directory paths) in your CSV`
         );
       } else if (error.message && error.message.includes("422")) {
-        setImageLoadError(
+        setErrorMessage(
           "Project initialization failed. Try reloading the page and starting fresh."
         );
       } else {
-        setImageLoadError("Error: " + error.message);
+        setErrorMessage("Error: " + error.message);
       }
     } finally {
       setIsLoading(false);
@@ -888,7 +928,7 @@ Possible solutions:
     try {
       // Check if project is initialized first
       if (!isInitialized) {
-        setImageLoadError(
+        setErrorMessage(
           "Please initialize the project with Start Project before starting automated training."
         );
         return;
@@ -896,7 +936,7 @@ Possible solutions:
 
       // Check if images are loaded
       if (currentBatch.length === 0) {
-        setImageLoadError(
+        setErrorMessage(
           "No images loaded. Please ensure images are loaded before starting training."
         );
         try {
@@ -915,7 +955,7 @@ Possible solutions:
       });
 
       if (!epochs || !batchSize || !samplingStrategy) {
-        setImageLoadError("Please set all training parameters");
+        setErrorMessage("Please set all training parameters");
         return;
       }
 
@@ -932,42 +972,42 @@ Possible solutions:
       console.log("API response:", response);
 
       if (response.status === "success") {
-        setImageLoadError("Automated training started successfully");
+        setSuccessMessage("Automated training started successfully");
         setIsRetraining(true);
       } else {
-        setImageLoadError("Failed to start training: " + response.message);
+        setErrorMessage("Failed to start training: " + response.message);
       }
     } catch (error) {
       console.error("Start training error:", error);
-      setImageLoadError("Failed to start automated training: " + error.message);
+      setErrorMessage("Failed to start automated training: " + error.message);
     }
   };
 
   const handleStopAutomatedTraining = async () => {
     try {
       await activeLearnAPI.stopAutomatedTraining();
-      setImageLoadError("Automated training stopped");
+      setInfoMessage("Automated training stopped");
     } catch (error) {
-      setImageLoadError(error.message);
+      setErrorMessage(error.message);
     }
   };
 
   const handleSaveCheckpoint = async () => {
     try {
-      setImageLoadError("Saving checkpoint...");
+      setInfoMessage("Saving checkpoint...");
       const result = await activeLearnAPI.saveCheckpoint();
-      setImageLoadError("Checkpoint saved successfully!");
+      setSuccessMessage("Checkpoint saved successfully!");
       // Refresh checkpoint list
       const updatedCheckpoints = await activeLearnAPI.listCheckpoints();
       setCheckpoints(updatedCheckpoints.checkpoints);
     } catch (error) {
-      setImageLoadError("Failed to save checkpoint: " + error.message);
+      setErrorMessage("Failed to save checkpoint: " + error.message);
     }
   };
 
   const handleLoadCheckpoint = async (checkpointId) => {
     try {
-      setImageLoadError("Loading checkpoint...");
+      setInfoMessage("Loading checkpoint...");
 
       console.log("Loading checkpoint:", checkpointId);
 
@@ -1005,14 +1045,14 @@ Possible solutions:
       setStatus(status);
       setMetrics(metrics);
       setEpisodeHistory(history.episodes);
-      setImageLoadError(
+      setSuccessMessage(
         `Checkpoint loaded successfully! Episode ${
           result.episode
         }, Accuracy: ${result.best_val_acc.toFixed(2)}%`
       );
     } catch (error) {
       console.error("Load checkpoint error:", error);
-      setImageLoadError("Failed to load checkpoint: " + error.message);
+      setErrorMessage("Failed to load checkpoint: " + error.message);
     }
   };
 
@@ -1090,14 +1130,14 @@ Possible solutions:
   const handleAutoStartBatch = async () => {
     if (isInitialized && !isRetraining && currentBatch.length === 0) {
       try {
-        setImageLoadError("Automatically loading next batch...");
+        setInfoMessage("Automatically loading next batch...");
         await getNextBatch();
-        setImageLoadError(
+        setSuccessMessage(
           `New batch loaded! Ready to continue active learning.`
         );
       } catch (error) {
         console.error("Auto-batch loading failed:", error);
-        setImageLoadError(
+        setErrorMessage(
           "Couldn't automatically load batch. Try manual batch loading."
         );
       }
@@ -1246,115 +1286,130 @@ Possible solutions:
                           </div>
 
                           {/* Sampling Strategy Controls */}
-                          <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                              <Label>Sampling Strategy</Label>
-                              <Select
-                                value={samplingStrategy}
-                                onValueChange={setSamplingStrategy}
-                                disabled={batchStats.completed > 0}
-                              >
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Select strategy" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="least_confidence">
-                                    Least Confidence
-                                  </SelectItem>
-                                  <SelectItem value="margin">
-                                    Margin Sampling
-                                  </SelectItem>
-                                  <SelectItem value="entropy">
-                                    Entropy
-                                  </SelectItem>
-                                  <SelectItem value="diversity">
-                                    Diversity-based
-                                  </SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div className="space-y-2">
-                              <Label>Learning Rate Strategy</Label>
-                              <Select
-                                value={lrConfig.strategy}
-                                onValueChange={(value) =>
-                                  setLrConfig((prev) => ({
-                                    ...prev,
-                                    strategy: value,
-                                  }))
-                                }
-                                disabled={isRetraining}
-                              >
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Select LR strategy" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="plateau">
-                                    Reduce on Plateau
-                                  </SelectItem>
-                                  <SelectItem value="cosine">
-                                    Cosine Annealing
-                                  </SelectItem>
-                                  <SelectItem value="warmup">
-                                    One Cycle with Warmup
-                                  </SelectItem>
-                                  <SelectItem value="step">
-                                    Step Decay
-                                  </SelectItem>
-                                </SelectContent>
-                              </Select>
+                      {/* Training Parameters Card */}
+                          <Card className="p-4">
+                            <CardHeader className="pb-2 px-0">
+                              <CardTitle className="text-lg">Training Parameters</CardTitle>
+                            </CardHeader>
+                            <CardContent className="px-0">
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <Label>Sampling Strategy</Label>
+                                  <Select
+                                    value={samplingStrategy}
+                                    onValueChange={setSamplingStrategy}
+                                    disabled={batchStats.completed > 0}
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue placeholder="Select strategy" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="least_confidence">
+                                        Least Confidence
+                                      </SelectItem>
+                                      <SelectItem value="margin">
+                                        Margin Sampling
+                                      </SelectItem>
+                                      <SelectItem value="entropy">
+                                        Entropy
+                                      </SelectItem>
+                                      <SelectItem value="diversity">
+                                        Diversity-based
+                                      </SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
 
-                              <Label>Initial Learning Rate</Label>
-                              <Input
-                                type="number"
-                                value={lrConfig.initial_lr}
-                                onChange={(e) =>
-                                  setLrConfig((prev) => ({
-                                    ...prev,
-                                    initial_lr: parseFloat(e.target.value),
-                                  }))
-                                }
-                                min={0.0001}
-                                max={0.1}
-                                step={0.0001}
-                                disabled={isRetraining}
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <Label>Batch Size</Label>
-                              <Input
-                                type="number"
-                                value={batchSize}
-                                onChange={(e) => {
-                                  const newBatchSize = Number(e.target.value);
-                                  setBatchSize(newBatchSize);
-                                  setBatchStats((prev) => ({
-                                    ...prev,
-                                    totalImages: newBatchSize,
-                                    remaining: newBatchSize,
-                                  }));
-                                }}
-                                min={1}
-                                max={100}
-                                disabled={
-                                  isRetraining || batchStats.completed > 0
-                                }
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <Label>Epochs</Label>
-                              <Input
-                                type="number"
-                                value={epochs}
-                                onChange={(e) => {
-                                  const newEpochs = Number(e.target.value);
-                                  setEpochs(newEpochs);
-                                }}
-                                min={10}
-                                disabled={isRetraining}
-                              />
-                            </div>
-                          </div>
+                                <div className="space-y-2">
+                                  <Label>Learning Rate Strategy</Label>
+                                  <Select
+                                    value={lrConfig.strategy}
+                                    onValueChange={(value) =>
+                                      setLrConfig((prev) => ({
+                                        ...prev,
+                                        strategy: value,
+                                      }))
+                                    }
+                                    disabled={isRetraining}
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue placeholder="Select LR strategy" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="plateau">
+                                        Reduce on Plateau
+                                      </SelectItem>
+                                      <SelectItem value="cosine">
+                                        Cosine Annealing
+                                      </SelectItem>
+                                      <SelectItem value="warmup">
+                                        One Cycle with Warmup
+                                      </SelectItem>
+                                      <SelectItem value="step">
+                                        Step Decay
+                                      </SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-3 gap-4 mt-4">
+                                <div className="space-y-2">
+                                  <Label>Initial Learning Rate</Label>
+                                  <Input
+                                    type="number"
+                                    value={lrConfig.initial_lr}
+                                    onChange={(e) =>
+                                      setLrConfig((prev) => ({
+                                        ...prev,
+                                        initial_lr: parseFloat(e.target.value),
+                                      }))
+                                    }
+                                    min={0.0001}
+                                    max={0.1}
+                                    step={0.0001}
+                                    disabled={isRetraining}
+                                  />
+                                </div>
+
+                                <div className="space-y-2">
+                                  <Label>Batch Size</Label>
+                                  <Input
+                                    type="number"
+                                    value={batchSize}
+                                    onChange={(e) => {
+                                      const newBatchSize = Number(e.target.value);
+                                      setBatchSize(newBatchSize);
+                                      setBatchStats((prev) => ({
+                                        ...prev,
+                                        totalImages: newBatchSize,
+                                        remaining: newBatchSize,
+                                      }));
+                                    }}
+                                    min={1}
+                                    max={100}
+                                    disabled={
+                                      isRetraining || batchStats.completed > 0
+                                    }
+                                  />
+                                </div>
+
+                                <div className="space-y-2">
+                                  <Label>Epochs</Label>
+                                  <Input
+                                    type="number"
+                                    value={epochs}
+                                    onChange={(e) => {
+                                      const newEpochs = Number(e.target.value);
+                                      setEpochs(newEpochs);
+                                    }}
+                                    min={10}
+                                    disabled={isRetraining}
+                                  />
+                                </div>
+                              </div>
+                            </CardContent>
+                          </Card>
 
                           {/* Data Split Configuration */}
                           <div className="grid grid-cols-2 gap-4">
@@ -1455,7 +1510,7 @@ Possible solutions:
 
                           <ImageLoader
                             onImagesLoaded={handleImagesLoaded}
-                            onError={setImageLoadError}
+                            onError={setErrorMessage}
                           />
                         </>
                       ) : (
@@ -1521,7 +1576,7 @@ Possible solutions:
                                 result.project_ready
                               ) {
                                 setIsProjectFullyInitialized(true);
-                                setImageLoadError(
+                                setSuccessMessage(
                                   `Project imported successfully! Model: ${importedModelType}. 
        Loaded ${result.dataset_stats.loaded_from_annotations} images automatically. 
        Getting first batch for active learning...`
@@ -1531,7 +1586,7 @@ Possible solutions:
                                 setTimeout(async () => {
                                   try {
                                     await getNextBatch();
-                                    setImageLoadError(
+                                    setSuccessMessage(
                                       `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`
                                     );
                                   } catch (error) {
@@ -1539,7 +1594,7 @@ Possible solutions:
                                       "Error getting first batch:",
                                       error
                                     );
-                                    setImageLoadError(
+                                    setErrorMessage(
                                       `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`
                                     );
                                   }
@@ -1548,12 +1603,12 @@ Possible solutions:
                                 result.dataset_stats.loaded_from_annotations > 0
                               ) {
                                 // Some images loaded but project not ready (maybe all labeled)
-                                setImageLoadError(
+                                setErrorMessage(
                                   `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`
                                 );
                               } else {
                                 // No images loaded automatically
-                                setImageLoadError(
+                                setErrorMessage(
                                   `${result.message} Images were not found in the expected locations. You can upload new images to continue.`
                                 );
                               }
@@ -1569,7 +1624,7 @@ Possible solutions:
                                 .catch(console.error);
                             }}
                             onError={(errorMsg) => {
-                              setImageLoadError(errorMsg);
+                              setErrorMessage(errorMsg);
                             }}
                           />
 
@@ -1577,12 +1632,12 @@ Possible solutions:
                             <>
                               <ModelAdaptationControls
                                 onAdaptSuccess={(result) => {
-                                  setImageLoadError(
+                                  setSuccessMessage(
                                     `Model adaptation successful using ${result.adaptation_type} strategy`
                                   );
                                 }}
                                 onError={(errorMsg) => {
-                                  setImageLoadError(
+                                  setErrorMessage(
                                     `Adaptation error: ${errorMsg}`
                                   );
                                 }}
@@ -1592,10 +1647,7 @@ Possible solutions:
                               {/* Label Management for Pretrained Model */}
                               <div>
                                 <Label>Labels</Label>
-                                <p className="text-sm text-gray-600 mb-2">
-                                  Adjust these labels to match your dataset
-                                  classes
-                                </p>
+                                <p className="text-sm text-gray-500 mb-2">Define your labels here</p>
                                 {labels.map((label, index) => (
                                   <div key={index} className="flex gap-2 mt-2">
                                     <Input
@@ -1804,19 +1856,23 @@ Possible solutions:
 
                               <ImageLoader
                                 onImagesLoaded={handleImagesLoaded}
-                                onError={setImageLoadError}
+                                onError={setErrorMessage}
                               />
                             </>
                           )}
                         </>
                       )}
 
-                      {imageLoadError && (
-                        <Alert variant="destructive">
-                          <AlertCircle className="h-4 w-4" />
-                          <AlertDescription>{imageLoadError}</AlertDescription>
-                        </Alert>
-                      )}
+                      {message.text && (() => {
+                        const alertProps = getAlertProps(message.type);
+                        const IconComponent = alertProps.icon;
+                        return (
+                          <Alert variant={alertProps.variant} className={alertProps.className}>
+                            <IconComponent className="h-4 w-4" />
+                            <AlertDescription>{message.text}</AlertDescription>
+                          </Alert>
+                        );
+                      })()}
 
                       <Button
                         className="w-full"
@@ -1930,11 +1986,11 @@ Possible solutions:
                                 window.URL.revokeObjectURL(url);
                                 document.body.removeChild(a);
 
-                                setImageLoadError(
+                                setSuccessMessage(
                                   "Project exported successfully!"
                                 );
                               } catch (error) {
-                                setImageLoadError(
+                                setErrorMessage(
                                   "Failed to export project: " + error.message
                                 );
                               }
@@ -2005,7 +2061,7 @@ Possible solutions:
                     // **NEW: Handle automatic image loading**
                     if (result.images_loaded && result.project_ready) {
                       setIsProjectFullyInitialized(true);
-                      setImageLoadError(
+                      setSuccessMessage(
                         `Project imported successfully! Model: ${importedModelType}. 
        Loaded ${result.dataset_stats.loaded_from_annotations} images automatically. 
        Getting first batch for active learning...`
@@ -2015,12 +2071,12 @@ Possible solutions:
                       setTimeout(async () => {
                         try {
                           await getNextBatch();
-                          setImageLoadError(
+                          setSuccessMessage(
                             `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`
                           );
                         } catch (error) {
                           console.error("Error getting first batch:", error);
-                          setImageLoadError(
+                          setErrorMessage(
                             `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`
                           );
                         }
@@ -2029,12 +2085,12 @@ Possible solutions:
                       result.dataset_stats.loaded_from_annotations > 0
                     ) {
                       // Some images loaded but project not ready (maybe all labeled)
-                      setImageLoadError(
+                      setErrorMessage(
                         `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`
                       );
                     } else {
                       // No images loaded automatically
-                      setImageLoadError(
+                      setErrorMessage(
                         `${result.message} Images were not found in the expected locations. You can upload new images to continue.`
                       );
                     }
@@ -2050,7 +2106,7 @@ Possible solutions:
                       .catch(console.error);
                   }}
                   onError={(errorMsg) => {
-                    setImageLoadError(errorMsg);
+                    setErrorMessage(errorMsg);
                   }}
                 />
 
@@ -2293,23 +2349,19 @@ Possible solutions:
                         {/* Image Loader */}
                         <ImageLoader
                           onImagesLoaded={handleImagesLoaded}
-                          onError={setImageLoadError}
+                          onError={setErrorMessage}
                         />
 
-                        {imageLoadError && (
-                          <Alert
-                            variant={
-                              imageLoadError.includes("successfully")
-                                ? "default"
-                                : "destructive"
-                            }
-                          >
-                            <AlertCircle className="h-4 w-4" />
-                            <AlertDescription>
-                              {imageLoadError}
-                            </AlertDescription>
-                          </Alert>
-                        )}
+                        {message.text && (() => {
+                          const alertProps = getAlertProps(message.type);
+                          const IconComponent = alertProps.icon;
+                          return (
+                            <Alert variant={alertProps.variant} className={alertProps.className}>
+                              <IconComponent className="h-4 w-4" />
+                              <AlertDescription>{message.text}</AlertDescription>
+                            </Alert>
+                          );
+                        })()}
 
                         {/* Start Project Button */}
                         <Button
@@ -2431,11 +2483,11 @@ Possible solutions:
                                       window.URL.revokeObjectURL(url);
                                       document.body.removeChild(a);
 
-                                      setImageLoadError(
+                                      setSuccessMessage(
                                         "Project exported successfully!"
                                       );
                                     } catch (error) {
-                                      setImageLoadError(
+                                      setErrorMessage(
                                         "Failed to export project: " +
                                           error.message
                                       );
@@ -2497,19 +2549,16 @@ Possible solutions:
                       </div>
                     )}
                   </div>
-                  {imageLoadError && (
-                    <Alert
-                      variant={
-                        imageLoadError.startsWith("Training") ||
-                        imageLoadError.startsWith("Getting")
-                          ? "default"
-                          : "destructive"
-                      }
-                    >
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertDescription>{imageLoadError}</AlertDescription>
-                    </Alert>
-                  )}
+                  {message.text && (() => {
+                    const alertProps = getAlertProps(message.type);
+                    const IconComponent = alertProps.icon;
+                    return (
+                      <Alert variant={alertProps.variant} className={alertProps.className}>
+                        <IconComponent className="h-4 w-4" />
+                        <AlertDescription>{message.text}</AlertDescription>
+                      </Alert>
+                    );
+                  })()}
                   {/* Label Selection */}
                   <div className="space-y-2">
                     <Label>Assign Label</Label>
