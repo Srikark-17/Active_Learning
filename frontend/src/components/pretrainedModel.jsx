@@ -1,15 +1,8 @@
-import React, { useState, useRef } from "react";
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardContent,
-  CardFooter,
-} from "./ui/card";
+import React, { useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
-import { Upload, CheckCircle, AlertCircle } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -18,104 +11,137 @@ import {
   SelectValue,
 } from "./ui/select";
 import { Alert, AlertDescription } from "./ui/alert";
+import { AlertCircle, CheckCircle, Upload } from "lucide-react";
 import activeLearnAPI from "../services/activelearning";
 
 const PretrainedModelImport = ({ onImportSuccess, onError }) => {
-  const [modelType, setModelType] = useState("resnet50");
+  const [modelFile, setModelFile] = useState(null);
+  const [selectedModel, setSelectedModel] = useState("resnet50");
   const [numClasses, setNumClasses] = useState(2);
-  const [projectName, setProjectName] = useState("pretrained_project");
-  const [isImporting, setIsImporting] = useState(false);
-  const [importError, setImportError] = useState(null);
-  const [importStatus, setImportStatus] = useState(null);
-  const [modelInfo, setModelInfo] = useState(null);
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [csvFile, setCsvFile] = useState(null);
-  const [labelColumn, setLabelColumn] = useState("annotation");
-  const [delimiter, setDelimiter] = useState(",");
-  const [modelImported, setModelImported] = useState(false);
-  const [verified, setVerified] = useState(false);
+  const [projectName, setProjectName] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [message, setMessage] = useState({ text: null, type: "info" });
 
-  const modelFileRef = useRef(null);
+  const handleFileChange = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      // Check file extension
+      const validExtensions = [".pt", ".pth", ".pkl", ".pickle"];
+      const fileExtension = file.name
+        .toLowerCase()
+        .substring(file.name.lastIndexOf("."));
 
-  const handleModelFileSelect = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setSelectedFile(file);
-    setImportError(null);
-    setImportStatus("Verifying model compatibility...");
-
-    try {
-      // Verify model compatibility
-      const result = await activeLearnAPI.verifyModelCompatibility(file);
-
-      if (result.compatible) {
-        setModelInfo(result);
-
-        // Handle different model types differently
-        if (result.detected_type === "vision-transformer") {
-          setModelType("vision-transformer");
-          if (!result.num_classes || result.num_classes > 100) {
-            setNumClasses(numClasses > 1 ? numClasses : 2);
-          } else {
-            setNumClasses(result.num_classes);
-          }
-        } else {
-          // For ResNet and other models, use detected values
-          if (result.model_type) setModelType(result.model_type);
-          if (result.num_classes) setNumClasses(result.num_classes);
-        }
-
-        setImportStatus(`Model verified: ${result.message}`);
-        setVerified(true);
+      if (validExtensions.includes(fileExtension)) {
+        setModelFile(file);
+        setMessage({ text: `Selected: ${file.name}`, type: "success" });
       } else {
-        setImportError(`Incompatible model: ${result.message}`);
-        setImportStatus(null);
+        setMessage({
+          text: "Please select a valid PyTorch model file (.pt, .pth, .pkl)",
+          type: "error",
+        });
+        setModelFile(null);
       }
-    } catch (error) {
-      setImportError(`Failed to verify model: ${error.message}`);
-      setImportStatus(null);
     }
   };
 
   const handleImportModel = async () => {
-    if (!selectedFile) {
-      setImportError("Please select a model file");
+    if (!modelFile || !projectName) {
+      setMessage({
+        text: "Please select a model file and enter a project name",
+        type: "error",
+      });
       return;
     }
 
     try {
-      setIsImporting(true);
-      setImportError(null);
-      setImportStatus("Importing model...");
+      setIsLoading(true);
+      setMessage({ text: "Importing model...", type: "info" });
 
-      // Import the pretrained model with user-specified parameters
-      const importResult = await activeLearnAPI.importPretrainedModel(
-        selectedFile,
-        modelType,
-        numClasses, // This is the user-specified value
+      const result = await activeLearnAPI.importPretrainedModel(
+        modelFile,
+        selectedModel,
+        numClasses,
         projectName
       );
 
-      console.log("Model import result:", importResult);
-      setImportStatus("Model imported successfully");
-      setModelImported(true);
+      setMessage({ text: "Model imported successfully!", type: "success" });
 
-      // Pass the user-specified numClasses, not the detected one
-      const resultWithUserClasses = {
-        ...importResult,
-        num_classes: numClasses, // Override with user-specified value
-        user_specified_classes: numClasses,
-      };
-
-      // Call the success callback with the corrected result
-      onImportSuccess(resultWithUserClasses);
+      // Call success callback with result
+      if (onImportSuccess) {
+        onImportSuccess(result);
+      }
     } catch (error) {
-      console.error("Import error:", error);
-      setImportError(`Failed to import model: ${error.message}`);
-      setImportStatus(null);
+      const errorMessage = error.message || "Failed to import model";
+      setMessage({ text: errorMessage, type: "error" });
+
+      if (onError) {
+        onError(errorMessage);
+      }
     } finally {
-      setIsImporting(false);
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerifyModel = async () => {
+    if (!modelFile) {
+      setMessage({ text: "Please select a model file first", type: "error" });
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      setMessage({ text: "Analyzing model...", type: "info" });
+
+      const result = await activeLearnAPI.verifyModelCompatibility(modelFile);
+
+      if (result.compatible) {
+        setMessage({
+          text: `Model verified! Detected: ${
+            result.model_type || "Unknown"
+          } with ${result.num_classes || "Unknown"} classes`,
+          type: "success",
+        });
+
+        // Auto-fill detected values
+        if (result.model_type && result.model_type !== "unknown") {
+          setSelectedModel(result.model_type);
+        }
+        if (result.num_classes) {
+          setNumClasses(result.num_classes);
+        }
+      } else {
+        setMessage({
+          text: result.message || "Model verification failed",
+          type: "error",
+        });
+      }
+    } catch (error) {
+      setMessage({
+        text: "Error verifying model: " + error.message,
+        type: "error",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const getAlertProps = (messageType) => {
+    switch (messageType) {
+      case "success":
+        return {
+          className: "border-green-200 bg-green-50 text-green-800",
+          icon: CheckCircle,
+        };
+      case "error":
+        return {
+          className: "border-red-200 bg-red-50 text-red-800",
+          icon: AlertCircle,
+        };
+      default:
+        return {
+          className: "border-blue-200 bg-blue-50 text-blue-800",
+          icon: AlertCircle,
+        };
     }
   };
 
@@ -125,22 +151,25 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
         <CardTitle>Import Pretrained Model</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="space-y-2">
+        {/* Project Name */}
+        <div>
           <Label htmlFor="project-name">Project Name</Label>
           <Input
             id="project-name"
             value={projectName}
             onChange={(e) => setProjectName(e.target.value)}
-            disabled={isImporting}
+            placeholder="Enter project name"
+            disabled={isLoading}
           />
         </div>
 
-        <div className="space-y-2">
+        {/* Model Type Selection */}
+        <div>
           <Label>Model Type</Label>
           <Select
-            value={modelType}
-            onValueChange={setModelType}
-            disabled={isImporting}
+            value={selectedModel}
+            onValueChange={setSelectedModel}
+            disabled={isLoading}
           >
             <SelectTrigger>
               <SelectValue placeholder="Select model type" />
@@ -149,84 +178,88 @@ const PretrainedModelImport = ({ onImportSuccess, onError }) => {
               <SelectItem value="resnet18">ResNet18</SelectItem>
               <SelectItem value="resnet50">ResNet50</SelectItem>
               <SelectItem value="vision-transformer">
-                Vision Transformer
+                Vision Transformer (ViT)
               </SelectItem>
               <SelectItem value="custom">Custom Model</SelectItem>
             </SelectContent>
           </Select>
         </div>
 
-        <div className="space-y-2">
+        {/* Number of Classes */}
+        <div>
           <Label htmlFor="num-classes">Number of Classes</Label>
           <Input
             id="num-classes"
             type="number"
-            min="2"
             value={numClasses}
-            onChange={(e) => setNumClasses(parseInt(e.target.value))}
-            disabled={isImporting}
+            onChange={(e) => setNumClasses(parseInt(e.target.value) || 2)}
+            min={2}
+            disabled={isLoading}
           />
         </div>
 
-        <div className="space-y-2">
-          <Label>Import Model File</Label>
-          <div className="flex gap-2">
-            <Button
-              onClick={() => modelFileRef.current.click()}
-              variant="outline"
-              className="w-full"
-              disabled={isImporting}
-            >
-              <Upload className="h-4 w-4 mr-2" />
-              Select Model File (.pt)
-            </Button>
-            <input
+        {/* File Upload */}
+        <div>
+          <Label htmlFor="model-file">Model File</Label>
+          <div className="mt-2">
+            <Input
+              id="model-file"
               type="file"
-              ref={modelFileRef}
-              onChange={handleModelFileSelect}
-              className="hidden"
-              accept=".pt,.pth,.ckpt"
+              accept=".pt,.pth,.pkl,.pickle"
+              onChange={handleFileChange}
+              disabled={isLoading}
             />
           </div>
-          {selectedFile && (
-            <div className="text-sm text-gray-600">
-              Selected: {selectedFile.name}
-            </div>
-          )}
-          {modelInfo && (
-            <Alert className="bg-blue-50 border-blue-200">
-              <CheckCircle className="h-4 w-4 text-blue-500" />
-              <AlertDescription className="text-blue-700">
-                Detected model type: {modelInfo.model_type}, Classes:{" "}
-                {modelInfo.num_classes || "Unknown"}
-              </AlertDescription>
-            </Alert>
-          )}
         </div>
 
-        {importError && (
-          <Alert variant="destructive">
-            <AlertCircle className="h-4 w-4" />
-            <AlertDescription>{importError}</AlertDescription>
-          </Alert>
+        {/* Custom Model Help Text */}
+        {selectedModel === "custom" && (
+          <div className="p-3 bg-blue-50 border border-blue-200 rounded">
+            <p className="text-sm text-blue-700">
+              <strong>Custom Model:</strong> Upload any PyTorch model file (.pt,
+              .pth). The system will attempt to automatically detect the
+              architecture and adapt it for your classes. You can verify the
+              model first to see what's detected.
+            </p>
+          </div>
         )}
 
-        {importStatus && (
-          <Alert>
-            <CheckCircle className="h-4 w-4" />
-            <AlertDescription>{importStatus}</AlertDescription>
-          </Alert>
-        )}
+        {/* Status Message */}
+        {message.text &&
+          (() => {
+            const alertProps = getAlertProps(message.type);
+            const IconComponent = alertProps.icon;
+            return (
+              <Alert className={alertProps.className}>
+                <IconComponent className="h-4 w-4" />
+                <AlertDescription>{message.text}</AlertDescription>
+              </Alert>
+            );
+          })()}
+
+        {/* Action Buttons */}
+        <div className="flex gap-2">
+          {selectedModel === "custom" && modelFile && (
+            <Button
+              onClick={handleVerifyModel}
+              disabled={isLoading}
+              variant="outline"
+              className="flex-1"
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              Verify Model
+            </Button>
+          )}
+
+          <Button
+            onClick={handleImportModel}
+            disabled={isLoading || !modelFile || !projectName}
+            className="flex-1"
+          >
+            {isLoading ? "Importing..." : "Import Model"}
+          </Button>
+        </div>
       </CardContent>
-      <CardFooter className="flex flex-col gap-2">
-        <Button
-          className="w-full"
-          onClick={handleImportModel}
-          disabled={!selectedFile || isImporting || !verified}
-        >
-          {isImporting ? "Importing..." : "Import Model"}
-        </Button>
-      </CardFooter>
     </Card>
   );
 };

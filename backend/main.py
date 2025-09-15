@@ -241,7 +241,7 @@ class ActiveLearningManager:
                 datetime.now().strftime("%Y%m%d_%H%M%S"))
             os.makedirs(self.output_dir, exist_ok=True)
                 
-            # Initialize model based on type
+            # Initialize model based on type with enhanced custom support
             if model_name == "resnet18":
                 self.model = models.resnet18(pretrained=True)
                 num_features = self.model.fc.in_features
@@ -250,15 +250,17 @@ class ActiveLearningManager:
                 self.model = models.resnet50(pretrained=True)
                 num_features = self.model.fc.in_features
                 self.model.fc = nn.Linear(num_features, num_classes)
-            elif model_name == "vision-transformer" or model_name == "custom":
-                # Create a proper ViT architecture instead of SimpleViTClassifier
+            elif model_name == "vision-transformer" or model_name == "vit":
+                # Create a proper ViT architecture
                 self.model = create_vit_model(num_classes=num_classes)
+            elif model_name == "custom":
+                # For custom models, start with a flexible base that can be adapted
+                print(f"Initializing custom model architecture for {num_classes} classes")
+                self.model = self._create_custom_model(num_classes)
             else:
-                # Default fallback
-                print(f"Unknown model type: {model_name}, using ResNet50")
-                self.model = models.resnet50(pretrained=True)
-                num_features = self.model.fc.in_features
-                self.model.fc = nn.Linear(num_features, num_classes)
+                # Handle other model types or treat as custom
+                print(f"Model type '{model_name}' not explicitly supported, treating as custom")
+                self.model = self._create_custom_model(num_classes, model_type=model_name)
                 
             self.model = self.model.to(self.device)
 
@@ -302,6 +304,164 @@ class ActiveLearningManager:
         except Exception as e:
             raise HTTPException(status_code=422, detail=str(e))
 
+    def _create_custom_model(self, num_classes, model_type="custom"):
+        """
+        Create a flexible custom model that can be adapted to different architectures
+        """
+        try:
+            # Try to create different types of custom models based on hints
+            if "vit" in model_type.lower() or "transformer" in model_type.lower():
+                return self._create_custom_vit(num_classes)
+            elif "resnet" in model_type.lower():
+                return self._create_custom_resnet(num_classes)
+            elif "efficientnet" in model_type.lower():
+                return self._create_custom_efficientnet(num_classes)
+            else:
+                # Default flexible architecture
+                return self._create_flexible_custom_model(num_classes)
+                
+        except Exception as e:
+            print(f"Error creating custom model: {e}")
+            # Fallback to a simple ResNet50
+            model = models.resnet50(pretrained=True)
+            num_features = model.fc.in_features
+            model.fc = nn.Linear(num_features, num_classes)
+            return model
+
+    def _create_custom_vit(self, num_classes):
+        """Create a custom Vision Transformer model"""
+        return ImprovedViTClassifier(
+            num_classes=num_classes,
+            image_size=224,
+            patch_size=16,
+            embed_dim=768,
+            num_heads=12,
+            num_layers=12
+        )
+
+    def _create_custom_resnet(self, num_classes):
+        """Create a custom ResNet-style model"""
+        model = models.resnet50(pretrained=True)
+        num_features = model.fc.in_features
+        model.fc = nn.Linear(num_features, num_classes)
+        return model
+
+    def _create_custom_efficientnet(self, num_classes):
+        """Create a custom EfficientNet-style model"""
+        try:
+            # Try to use timm for EfficientNet
+            import timm
+            model = timm.create_model('efficientnet_b0', pretrained=True, num_classes=num_classes)
+            return model
+        except ImportError:
+            print("timm not available, falling back to ResNet")
+            return self._create_custom_resnet(num_classes)
+
+    def _create_flexible_custom_model(self, num_classes):
+        """
+        Create a flexible custom model that can adapt to different state dicts
+        """
+        class FlexibleCustomModel(nn.Module):
+            def __init__(self, num_classes):
+                super().__init__()
+                # Start with a basic CNN backbone
+                self.features = nn.Sequential(
+                    nn.Conv2d(3, 64, kernel_size=3, padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.MaxPool2d(2),
+                    nn.Conv2d(64, 128, kernel_size=3, padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.MaxPool2d(2),
+                    nn.Conv2d(128, 256, kernel_size=3, padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.AdaptiveAvgPool2d((7, 7))
+                )
+                
+                # Flexible classifier
+                self.classifier = nn.Sequential(
+                    nn.Dropout(0.5),
+                    nn.Linear(256 * 7 * 7, 512),
+                    nn.ReLU(inplace=True),
+                    nn.Dropout(0.5),
+                    nn.Linear(512, num_classes)
+                )
+                
+            def forward(self, x):
+                x = self.features(x)
+                x = x.view(x.size(0), -1)
+                x = self.classifier(x)
+                return x
+        
+        return FlexibleCustomModel(num_classes)
+
+    def load_custom_model_weights(self, state_dict, num_classes=None):
+        """
+        Load weights into a custom model with flexible adaptation
+        """
+        try:
+            # First, try to determine the model type from the state dict
+            model_type = self._detect_model_type_from_state_dict(state_dict)
+            
+            if num_classes is None:
+                num_classes = self._detect_num_classes_from_state_dict(state_dict)
+            
+            # Create appropriate model based on detected type
+            if model_type == "vit":
+                self.model = self._create_custom_vit(num_classes)
+            elif model_type == "resnet":
+                self.model = self._create_custom_resnet(num_classes)
+            else:
+                self.model = self._create_flexible_custom_model(num_classes)
+            
+            # Try to load the state dict
+            missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
+            
+            if missing_keys:
+                print(f"Missing keys when loading custom model: {missing_keys}")
+            if unexpected_keys:
+                print(f"Unexpected keys when loading custom model: {unexpected_keys}")
+                
+            self.model = self.model.to(self.device)
+            return True
+            
+        except Exception as e:
+            print(f"Error loading custom model weights: {e}")
+            return False
+
+    def _detect_model_type_from_state_dict(self, state_dict):
+        """Detect model type from state dict keys"""
+        keys = list(state_dict.keys())
+        
+        # Check for ViT indicators
+        if any(key in str(keys) for key in ['cls_token', 'pos_embed', 'patch_embed']):
+            return "vit"
+        
+        # Check for ResNet indicators
+        if any(key.startswith('layer') for key in keys):
+            return "resnet"
+        
+        # Check for other architectures
+        if 'features' in str(keys) and 'classifier' in str(keys):
+            return "cnn"
+        
+        return "unknown"
+
+    def _detect_num_classes_from_state_dict(self, state_dict):
+        """Detect number of classes from the final layer"""
+        # Look for common final layer patterns
+        final_layer_patterns = ['fc.weight', 'classifier.weight', 'head.weight']
+        
+        for pattern in final_layer_patterns:
+            if pattern in state_dict:
+                return state_dict[pattern].shape[0]
+        
+        # Look for any layer ending with these patterns
+        for key in state_dict.keys():
+            if key.endswith('.weight') and any(pattern.split('.')[0] in key for pattern in final_layer_patterns):
+                return state_dict[key].shape[0]
+        
+        return 2  # Default fallback
+
     def save_state(self, is_best: bool = False):
         """Save complete model and training state"""
         if not self.checkpoint_manager:
@@ -332,6 +492,105 @@ class ActiveLearningManager:
         
         return self.checkpoint_manager.save_checkpoint(state, is_best)
 
+    def evaluate_model_on_unlabeled(self, num_samples=10):
+        """
+        Evaluate model performance on a sample of unlabeled data
+        Returns predictions with confidence scores for the next batch of images
+        """
+        try:
+            if not self.model or len(self.unlabeled_data) == 0:
+                return None
+                
+            self.model.eval()
+            
+            # Get a sample of unlabeled data
+            sample_size = min(num_samples, len(self.unlabeled_data))
+            sample_ids = list(self.unlabeled_data.keys())[:sample_size]
+            
+            predictions = []
+            all_confidences = []
+            
+            with torch.no_grad():
+                for img_id in sample_ids:
+                    img_tensor = self.unlabeled_data[img_id].unsqueeze(0).to(self.device)
+                    outputs = self.model(img_tensor)
+                    probs = torch.softmax(outputs, dim=1)
+                    
+                    # Get top prediction
+                    top_prob, top_class = torch.max(probs, dim=1)
+                    confidence = float(top_prob.item())
+                    predicted_class = int(top_class.item())
+                    
+                    # Get all class probabilities
+                    all_probs = []
+                    for i, prob in enumerate(probs[0]):
+                        all_probs.append({
+                            'class_index': i,
+                            'probability': float(prob.item())
+                        })
+                    
+                    # Sort by probability (highest first)
+                    all_probs.sort(key=lambda x: x['probability'], reverse=True)
+                    
+                    predictions.append({
+                        'image_id': img_id,
+                        'predicted_class': predicted_class,
+                        'confidence': confidence,
+                        'all_probabilities': all_probs
+                    })
+                    
+                    all_confidences.append(confidence)
+            
+            # Calculate overall statistics
+            overall_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0
+            
+            return {
+                'predictions': predictions,
+                'overall_confidence': overall_confidence,
+                'num_evaluated': len(predictions),
+                'episode_info': {
+                    'episode': self.episode,
+                    'validation_accuracy': self.best_val_acc
+                }
+            }
+            
+        except Exception as e:
+            print(f"Error evaluating model: {str(e)}")
+            return None
+
+    def get_evaluation_batch(self, num_samples=10):
+        """
+        Get the next batch of unlabeled images for evaluation display
+        Similar to get_next_batch but focused on evaluation metrics
+        """
+        try:
+            if not self.model or len(self.unlabeled_data) == 0:
+                return None
+                
+            # Get evaluation data
+            evaluation_data = self.evaluate_model_on_unlabeled(num_samples)
+            
+            if evaluation_data:
+                # Add uncertainty scores for each prediction
+                for pred in evaluation_data['predictions']:
+                    # Calculate uncertainty (1 - confidence)
+                    pred['uncertainty'] = 1 - pred['confidence']
+                    
+                    # Add prediction list in the format expected by the UI
+                    pred['predictions'] = [
+                        {
+                            'label': f"Class {i}",  # This will be updated with actual labels by the frontend
+                            'confidence': prob['probability']
+                        }
+                        for i, prob in enumerate(pred['all_probabilities'])
+                    ]
+            
+            return evaluation_data
+            
+        except Exception as e:
+            print(f"Error getting evaluation batch: {str(e)}")
+            return None
+        
     async def add_initial_data(self, files: List[UploadFile], val_split: float = None):
         """Add initial dataset and split into labeled/unlabeled/validation"""
         if val_split is not None:
@@ -391,6 +650,104 @@ class ActiveLearningManager:
         }
 
         return split_info
+
+    def set_custom_model(self, model, model_name="custom"):
+        """
+        Set a custom model directly (for when users provide their own model)
+        """
+        try:
+            self.model = model.to(self.device)
+            self.model_name = model_name
+            
+            # Reinitialize optimizer with new model
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(), 
+                lr=self.training_config.get('learning_rate', 0.001)
+            )
+            
+            print(f"Custom model '{model_name}' set successfully")
+            return True
+            
+        except Exception as e:
+            print(f"Error setting custom model: {e}")
+            return False
+
+    def adapt_model_for_classes(self, num_classes):
+        """
+        Adapt the current model for a different number of classes
+        """
+        try:
+            if hasattr(self.model, 'fc'):
+                # ResNet-style models
+                in_features = self.model.fc.in_features
+                self.model.fc = nn.Linear(in_features, num_classes)
+            elif hasattr(self.model, 'classifier'):
+                # ViT or other models with classifier
+                if isinstance(self.model.classifier, nn.Linear):
+                    in_features = self.model.classifier.in_features
+                    self.model.classifier = nn.Linear(in_features, num_classes)
+                elif isinstance(self.model.classifier, nn.Sequential):
+                    # Find the last Linear layer
+                    for i, layer in enumerate(reversed(self.model.classifier)):
+                        if isinstance(layer, nn.Linear):
+                            in_features = layer.in_features
+                            self.model.classifier[-i-1] = nn.Linear(in_features, num_classes)
+                            break
+            elif hasattr(self.model, 'head'):
+                # ViT head
+                in_features = self.model.head.in_features
+                self.model.head = nn.Linear(in_features, num_classes)
+            else:
+                print("Warning: Could not adapt model for new number of classes")
+                return False
+                
+            self.model = self.model.to(self.device)
+            
+            # Reinitialize optimizer
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(), 
+                lr=self.training_config.get('learning_rate', 0.001)
+            )
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error adapting model for {num_classes} classes: {e}")
+            return False
+
+    def get_model_info(self):
+        """
+        Get information about the current model
+        """
+        if not self.model:
+            return None
+            
+        try:
+            info = {
+                'model_class': self.model.__class__.__name__,
+                'num_parameters': sum(p.numel() for p in self.model.parameters()),
+                'trainable_parameters': sum(p.numel() for p in self.model.parameters() if p.requires_grad),
+                'device': str(next(self.model.parameters()).device),
+                'model_type': 'custom'  # Default to custom
+            }
+            
+            # Try to determine model type
+            if hasattr(self.model, 'fc'):
+                info['final_layer'] = 'fc'
+                info['num_classes'] = self.model.fc.out_features
+            elif hasattr(self.model, 'classifier'):
+                info['final_layer'] = 'classifier'
+                if isinstance(self.model.classifier, nn.Linear):
+                    info['num_classes'] = self.model.classifier.out_features
+            elif hasattr(self.model, 'head'):
+                info['final_layer'] = 'head'
+                info['num_classes'] = self.model.head.out_features
+                
+            return info
+            
+        except Exception as e:
+            print(f"Error getting model info: {e}")
+            return None
 
     def get_next_batch(self, strategy: str, batch_size: int) -> List[dict]:
         """
@@ -623,32 +980,40 @@ class ActiveLearningManager:
         return epoch_loss, epoch_accuracy
     
     def validate_model(self):
-        """Perform validation on the validation set"""
+        """Perform validation on the validation set - improved for CSV uploads"""
         self.model.eval()
         total_correct = 0
         total_samples = 0
         
-        # Only use labeled validation samples
-        labeled_validation = {
-            idx: (tensor, label) 
-            for idx, (tensor, label) in self.validation_data.items() 
-            if label is not None
-        }
+        # Get validation data that has labels
+        labeled_validation = {}
+        for idx, (tensor, label) in self.validation_data.items():
+            if label is not None:
+                labeled_validation[idx] = (tensor, label)
+        
+        # If no labeled validation data, use a portion of labeled training data for validation
+        if len(labeled_validation) == 0 and len(self.labeled_data) > 0:
+            print("No labeled validation data found. Using portion of training data for validation.")
+            # Use 20% of labeled data for validation
+            val_size = max(1, len(self.labeled_data) // 5)
+            val_items = list(self.labeled_data.items())[:val_size]
+            labeled_validation = dict(val_items)
         
         if len(labeled_validation) == 0:
+            print("Warning: No validation data available")
             return 0.0
-            
+        
         batch_size = 32
         with torch.no_grad():
-            for idx in labeled_validation:
-                img_tensor, label = labeled_validation[idx]
+            for idx, (img_tensor, label) in labeled_validation.items():
                 img_tensor = img_tensor.unsqueeze(0).to(self.device)
                 outputs = self.model(img_tensor)
                 _, predicted = torch.max(outputs, 1)
                 total_correct += (predicted == label).sum().item()
                 total_samples += 1
-                
+                    
         validation_accuracy = 100.0 * total_correct / total_samples
+        print(f"Validation Accuracy: {validation_accuracy:.2f}% ({total_correct}/{total_samples})")
         return validation_accuracy
 
     def validate(self):
@@ -797,7 +1162,6 @@ class ActiveLearningManager:
             if self.checkpoint_manager is None:
                 self.checkpoint_manager = CheckpointManager(self.output_dir)
 
-
             # Initialize optimizer
             optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
             
@@ -926,19 +1290,35 @@ class ActiveLearningManager:
                 "lr_history": lr_history
             }
 
-            # Select next batch if training successful
+            # Try to generate evaluation data
+            evaluation_data = None
             try:
-                # Get next batch using current model
-                next_batch = self.get_next_batch(
-                    strategy=self.training_config["sampling_strategy"],
-                    batch_size=batch_size
-                )
-                
+                print("Generating evaluation data for model assessment...")
+                evaluation_data = self.get_evaluation_batch(num_samples=10)
+                if evaluation_data:
+                    print(f"Generated evaluation data for {len(evaluation_data['predictions'])} images")
+                else:
+                    print("No evaluation data could be generated")
+            except Exception as e:
+                print(f"Warning: Could not generate evaluation data: {str(e)}")
+
+            # Select next batch if training successful and no evaluation data
+            try:
+                if evaluation_data is None:
+                    # Get next batch using current model (original behavior)
+                    next_batch = self.get_next_batch(
+                        strategy=self.training_config["sampling_strategy"],
+                        batch_size=batch_size
+                    )
+                else:
+                    # If we have evaluation data, we'll let the frontend handle the next batch
+                    next_batch = None
+                    
                 # Update episode metrics
                 episode_metrics = {
                     'episode': self.episode,
                     'train_result': train_result,
-                    'batch_size': len(next_batch),
+                    'batch_size': len(next_batch) if next_batch else 0,
                     'strategy': self.training_config["sampling_strategy"],
                     'labeled_size': len(self.labeled_data),
                     'unlabeled_size': len(self.unlabeled_data),
@@ -949,41 +1329,59 @@ class ActiveLearningManager:
                 
                 self.episode_history.append(episode_metrics)
                 
+                # Update episode tracking
+                self.plot_episode_xvalues.append(self.episode)
+                self.plot_episode_yvalues.append(best_val_acc)
+                
                 # Save episode checkpoint
-                if hasattr(self, 'checkpoint_manager'):
-                    state = {
-                        'episode': self.episode,
-                        'model_state': self.model.state_dict(),
-                        'optimizer_state': optimizer.state_dict(),
-                        'scheduler_state': scheduler.state_dict(),
-                        'scheduler_config': scheduler_config,
-                        'best_val_acc': best_val_acc,
-                        'training_config': self.training_config,
-                        'labeled_indices': list(self.labeled_data.keys()),
-                        'unlabeled_indices': list(self.unlabeled_data.keys()),
-                        'validation_indices': list(self.validation_data.keys()),
-                        'lr_history': lr_history,
-                        'metrics': {
-                            'episode_accuracies': {
-                                'x': self.plot_episode_xvalues,
-                                'y': self.plot_episode_yvalues
+                if hasattr(self, 'checkpoint_manager') and self.checkpoint_manager:
+                    try:
+                        state = {
+                            'episode': self.episode,
+                            'model_state': self.model.state_dict(),
+                            'optimizer_state': optimizer.state_dict(),
+                            'scheduler_state': scheduler.state_dict(),
+                            'scheduler_config': scheduler_config,
+                            'best_val_acc': best_val_acc,
+                            'training_config': self.training_config,
+                            'labeled_indices': list(self.labeled_data.keys()),
+                            'unlabeled_indices': list(self.unlabeled_data.keys()),
+                            'validation_indices': list(self.validation_data.keys()),
+                            'lr_history': lr_history,
+                            'metrics': {
+                                'episode_accuracies': {
+                                    'x': self.plot_episode_xvalues,
+                                    'y': self.plot_episode_yvalues
+                                },
+                                'epoch_losses': {
+                                    'x': self.plot_epoch_xvalues,
+                                    'y': self.plot_epoch_yvalues
+                                }
                             },
-                            'epoch_losses': {
-                                'x': self.plot_epoch_xvalues,
-                                'y': self.plot_epoch_yvalues
-                            }
-                        },
-                        'episode_history': self.episode_history
-                    }
-                    self.checkpoint_manager.save_checkpoint(state)
+                            'episode_history': self.episode_history
+                        }
+                        self.checkpoint_manager.save_checkpoint(state)
+                    except Exception as checkpoint_error:
+                        print(f"Warning: Failed to save episode checkpoint: {str(checkpoint_error)}")
 
+                # Increment episode counter
                 self.episode += 1
                 
-                return {
+                # Return result with evaluation data if available
+                result = {
                     "status": "success",
                     "metrics": episode_metrics,
-                    "next_batch": next_batch
+                    "final_val_acc": best_val_acc  # Add this for backward compatibility
                 }
+                
+                if evaluation_data:
+                    result["evaluation_data"] = evaluation_data
+                    print("Returning episode result with evaluation data")
+                else:
+                    result["next_batch"] = next_batch
+                    print("Returning episode result with next batch")
+                    
+                return result
                     
             except Exception as e:
                 raise ValueError(f"Error selecting next batch: {str(e)}")
@@ -1424,11 +1822,15 @@ class CheckpointManager:
     def __init__(self, output_dir: str):
         self.output_dir = output_dir
         self.checkpoint_dir = os.path.join(output_dir, 'checkpoints')
+        # ENSURE DIRECTORY EXISTS
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         
     def save_checkpoint(self, state, is_best=False):
-        """Save checkpoint with correct episode numbering"""
+        """Save checkpoint with correct episode numbering and better error handling"""
         try:
+            # ENSURE DIRECTORY EXISTS BEFORE SAVING
+            os.makedirs(self.checkpoint_dir, exist_ok=True)
+            
             # Use the episode from the state, not increment it
             episode = state.get('episode', 0)
             
@@ -1462,21 +1864,35 @@ class CheckpointManager:
             else:
                 safe_state['scheduler_state'] = {}
             
-            # Save the checkpoint
-            torch.save(safe_state, checkpoint_path)
-            print(f"Checkpoint saved to: {checkpoint_path}")
-            
-            # Save as best if requested
-            if is_best:
-                torch.save(safe_state, best_path)
-                print(f"Best model saved to: {best_path}")
-            
-            print(f"Saved with keys: {list(safe_state.keys())}")
-            return checkpoint_path
+            # Save the checkpoint with better error handling
+            try:
+                torch.save(safe_state, checkpoint_path)
+                print(f"Checkpoint saved to: {checkpoint_path}")
+                
+                # Save as best if requested
+                if is_best:
+                    torch.save(safe_state, best_path)
+                    print(f"Best model saved to: {best_path}")
+                
+                return checkpoint_path
+                
+            except Exception as save_error:
+                print(f"Error saving checkpoint file: {str(save_error)}")
+                # Try to save with a different filename if the original fails
+                alternative_path = os.path.join(self.checkpoint_dir, f'checkpoint_ep{episode}_{int(time.time())}.pt')
+                try:
+                    torch.save(safe_state, alternative_path)
+                    print(f"Checkpoint saved to alternative path: {alternative_path}")
+                    return alternative_path
+                except Exception as alt_error:
+                    print(f"Alternative save also failed: {str(alt_error)}")
+                    raise save_error
             
         except Exception as e:
-            print(f"Error saving checkpoint: {str(e)}")
-            raise e
+            print(f"Error in save_checkpoint: {str(e)}")
+            # Don't let checkpoint errors break training
+            print("Warning: Checkpoint save failed, but continuing training...")
+            return None
             
     def load_checkpoint(self, model, optimizer=None, scheduler=None, checkpoint_path=None):
         """Load model checkpoint with safe handling of missing components"""
@@ -1648,20 +2064,21 @@ class AutomatedTrainingManager:
         # Check and reset if training is stuck
         self.check_training_state()
         
-        # Only trigger training if we have completed the batch AND aren't already training
-        if (self.current_batch_labeled_count >= self.current_batch_size and 
-            len(self.al_manager.labeled_data) >= self.min_required_samples and
-            not self.is_training):
-            print("Starting training cycle...")
+        # Only trigger training if we have completed the FULL batch AND aren't already training
+        batch_is_complete = self.current_batch_labeled_count >= self.current_batch_size
+        has_enough_samples = len(self.al_manager.labeled_data) >= self.min_required_samples
+        
+        if (batch_is_complete and has_enough_samples and not self.is_training):
+            print("Batch is complete! Starting training cycle...")
             asyncio.create_task(self._train_and_get_next_batch())
         else:
             if self.is_training:
                 print("Training already in progress...")
-            elif self.current_batch_labeled_count < self.current_batch_size:
-                print(f"Waiting for more labels before training")
-            elif len(self.al_manager.labeled_data) < self.min_required_samples:
+            elif not batch_is_complete:
+                print(f"Waiting for more labels before training ({self.current_batch_labeled_count}/{self.current_batch_size})")
+            elif not has_enough_samples:
                 print(f"Need more samples (have {len(self.al_manager.labeled_data)}, need {self.min_required_samples})")
-            
+
     def update_config(self, config):
         """Update training configuration"""
         self.training_config.update(config)
@@ -1714,7 +2131,7 @@ class AutomatedTrainingManager:
             raise
 
     async def _train_and_get_next_batch(self):
-        """Training cycle with improved state management"""
+        """Training cycle with improved state management and evaluation"""
         try:
             print("\n=== Starting Training Cycle ===")
             self.last_training_start = time.time()
@@ -1733,8 +2150,23 @@ class AutomatedTrainingManager:
             
             print(f"Training completed. Validation accuracy: {self.al_manager.best_val_acc:.2f}%")
             
+            # **CHECK FOR EVALUATION DATA**
+            if 'evaluation_data' in training_result and training_result['evaluation_data']:
+                print("Evaluation data found - evaluation screen should be shown")
+                # Don't get next batch automatically - let the evaluation screen handle it
+                self.is_training = False
+                self.last_training_start = None
+                return {
+                    "status": "success",
+                    "evaluation_available": True,
+                    "evaluation_data": training_result['evaluation_data'],
+                    "training_result": training_result,
+                    "validation_accuracy": self.al_manager.best_val_acc
+                }
+            
+            # If no evaluation data, continue with normal batch flow
             if not self.stop_requested:
-                print("Getting next batch...")
+                print("No evaluation data - getting next batch...")
                 self.current_batch = self.al_manager.get_next_batch(
                     strategy=self.training_config['sampling_strategy'],
                     batch_size=self.training_config['batch_size']
@@ -2633,33 +3065,241 @@ async def import_model(uploaded_file: UploadFile = File(...)):  # Add File impor
         print(f"Error importing model: {str(e)}")  # Log the error
         raise HTTPException(status_code=500, detail=str(e))
     
-@app.post("/train-episode")
-async def train_episode(
-    epochs: int = 10,
-    batch_size: int = 32,
-    learning_rate: float = 0.001
-):
+def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
+    """Run a complete training episode with improved batch selection, checkpointing, LR scheduling, and evaluation"""
     try:
-        if not hasattr(al_manager, 'model') or al_manager.model is None:
-            raise HTTPException(
-                status_code=400, 
-                detail="Model not initialized. Please initialize project first."
-            )
-            
-        if len(al_manager.labeled_data) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="No labeled data available for training"
-            )
-            
-        result = al_manager.train_episode(epochs, batch_size, learning_rate)
-        return result
+        if len(self.labeled_data) == 0:
+            raise ValueError("No labeled data available for training")
+
+        # Initialize checkpoint manager if not exists
+        if self.checkpoint_manager is None:
+            self.checkpoint_manager = CheckpointManager(self.output_dir)
+
+        # Initialize optimizer
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+        # Initialize scheduler with configurable strategy
+        scheduler_config = self.training_config.get('scheduler', {
+            'strategy': 'plateau',  # default strategy
+            'params': {
+                'mode': 'max',
+                'factor': 0.1,
+                'patience': 5,
+                'verbose': True,
+                'min_lr': 1e-6
+            }
+        })
+        
+        # Create scheduler based on strategy
+        if scheduler_config['strategy'] == 'plateau':
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, **scheduler_config['params']
+            )
+        elif scheduler_config['strategy'] == 'cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=epochs,
+                eta_min=scheduler_config['params'].get('min_lr', 0)
+            )
+        elif scheduler_config['strategy'] == 'warmup':
+            steps_per_epoch = len(self.labeled_data) // batch_size
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=scheduler_config['params'].get('max_lr', learning_rate * 10),
+                epochs=epochs,
+                steps_per_epoch=steps_per_epoch,
+                pct_start=scheduler_config['params'].get('warmup_pct', 0.3)
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='max', factor=0.1, patience=5, verbose=True
+            )
+
+        criterion = nn.CrossEntropyLoss()
+        best_val_acc = 0
+        best_model_state = None
+        lr_history = []
+
+        # Training loop with validation
+        for epoch in range(epochs):
+            # Train for one epoch
+            train_loss, train_acc = self.train_epoch(optimizer, criterion, batch_size)
+            
+            # Validate
+            val_acc = self.validate_model()
+            
+            # Update learning rate based on scheduler strategy
+            current_lr = optimizer.param_groups[0]['lr']
+            if scheduler_config['strategy'] == 'plateau':
+                scheduler.step(val_acc)
+            else:
+                scheduler.step()
+            
+            # Record LR change
+            new_lr = optimizer.param_groups[0]['lr']
+            lr_history.append({
+                'epoch': epoch + 1,
+                'old_lr': current_lr,
+                'new_lr': new_lr,
+                'val_acc': val_acc
+            })
+            
+            # Save checkpoint if best model
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                best_model_state = self.model.state_dict().copy()
+                
+                # Try to save checkpoint but don't fail training if it doesn't work
+                try:
+                    if self.checkpoint_manager:
+                        state = {
+                            'episode': self.episode,
+                            'model_state': best_model_state,
+                            'optimizer_state': optimizer.state_dict(),
+                            'scheduler_state': scheduler.state_dict(),
+                            'scheduler_config': scheduler_config,
+                            'best_val_acc': best_val_acc,
+                            'training_config': self.training_config,
+                            'labeled_indices': list(self.labeled_data.keys()),
+                            'unlabeled_indices': list(self.unlabeled_data.keys()),
+                            'validation_indices': list(self.validation_data.keys()),
+                            'lr_history': lr_history,
+                            'metrics': {
+                                'episode_accuracies': {
+                                    'x': self.plot_episode_xvalues,
+                                    'y': self.plot_episode_yvalues
+                                },
+                                'epoch_losses': {
+                                    'x': self.plot_epoch_xvalues,
+                                    'y': self.plot_epoch_yvalues
+                                }
+                            },
+                            'episode_history': self.episode_history
+                        }
+                        checkpoint_path = self.checkpoint_manager.save_checkpoint(state, is_best=True)
+                        if checkpoint_path:
+                            print(f"Checkpoint saved successfully: {checkpoint_path}")
+                        else:
+                            print("Warning: Checkpoint save failed, but training continues...")
+                except Exception as checkpoint_error:
+                    print(f"Warning: Failed to save checkpoint: {str(checkpoint_error)}")
+                    print("Training will continue without checkpoint...")
+
+            # Store training progress
+            self.plot_epoch_xvalues.append(epoch + 1)
+            self.plot_epoch_yvalues.append(train_loss)
+
+            print(f"Epoch {epoch + 1}/{epochs}")
+            print(f"Training Loss: {train_loss:.4f}")
+            print(f"Training Accuracy: {train_acc:.2f}%")
+            print(f"Validation Accuracy: {val_acc:.2f}%")
+            print(f"Learning Rate: {new_lr:.6f}")
+
+        # Restore best model state
+        if best_model_state is not None:
+            self.model.load_state_dict(best_model_state)
+            self.best_val_acc = best_val_acc
+            self.best_model_state = best_model_state
+
+        train_result = {
+            "status": "success",
+            "final_accuracy": val_acc,
+            "best_accuracy": best_val_acc,
+            "lr_history": lr_history
+        }
+
+        # **NEW: Get evaluation data on next unlabeled images**
+        evaluation_data = None
+        try:
+            evaluation_data = self.get_evaluation_batch(num_samples=10)
+            if evaluation_data:
+                print(f"Generated evaluation data for {len(evaluation_data['predictions'])} images")
+        except Exception as e:
+            print(f"Warning: Could not generate evaluation data: {str(e)}")
+
+        # Select next batch if training successful and no evaluation data
+        try:
+            if evaluation_data is None:
+                # Get next batch using current model (original behavior)
+                next_batch = self.get_next_batch(
+                    strategy=self.training_config["sampling_strategy"],
+                    batch_size=batch_size
+                )
+            else:
+                # If we have evaluation data, we'll let the frontend handle the next batch
+                next_batch = None
+                
+            # Update episode metrics
+            episode_metrics = {
+                'episode': self.episode,
+                'train_result': train_result,
+                'batch_size': len(next_batch) if next_batch else 0,
+                'strategy': self.training_config["sampling_strategy"],
+                'labeled_size': len(self.labeled_data),
+                'unlabeled_size': len(self.unlabeled_data),
+                'best_val_acc': best_val_acc,
+                'learning_rate': new_lr,
+                'lr_history': lr_history
+            }
+            
+            self.episode_history.append(episode_metrics)
+            
+            # Update episode tracking
+            self.plot_episode_xvalues.append(self.episode)
+            self.plot_episode_yvalues.append(best_val_acc)
+            
+            # Save episode checkpoint
+            if hasattr(self, 'checkpoint_manager'):
+                state = {
+                    'episode': self.episode,
+                    'model_state': self.model.state_dict(),
+                    'optimizer_state': optimizer.state_dict(),
+                    'scheduler_state': scheduler.state_dict(),
+                    'scheduler_config': scheduler_config,
+                    'best_val_acc': best_val_acc,
+                    'training_config': self.training_config,
+                    'labeled_indices': list(self.labeled_data.keys()),
+                    'unlabeled_indices': list(self.unlabeled_data.keys()),
+                    'validation_indices': list(self.validation_data.keys()),
+                    'lr_history': lr_history,
+                    'metrics': {
+                        'episode_accuracies': {
+                            'x': self.plot_episode_xvalues,
+                            'y': self.plot_episode_yvalues
+                        },
+                        'epoch_losses': {
+                            'x': self.plot_epoch_xvalues,
+                            'y': self.plot_epoch_yvalues
+                        }
+                    },
+                    'episode_history': self.episode_history
+                }
+                self.checkpoint_manager.save_checkpoint(state)
+
+            self.episode += 1
+            
+            # **NEW: Return evaluation data if available**
+            result = {
+                "status": "success",
+                "metrics": episode_metrics,
+                "final_val_acc": best_val_acc  # Add this for backward compatibility
+            }
+            
+            if evaluation_data:
+                result["evaluation_data"] = evaluation_data
+                print("Returning episode result with evaluation data")
+            else:
+                result["next_batch"] = next_batch
+                print("Returning episode result with next batch")
+                
+            return result
+                
+        except Exception as e:
+            raise ValueError(f"Error after training: {str(e)}")
+            
     except Exception as e:
-        print(f"Training episode error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error in train_episode: {str(e)}")
+        raise
 
 @app.get("/episode-history")
 async def get_episode_history():
@@ -3025,8 +3665,8 @@ async def import_pretrained_model(
         # Read model file
         content = await uploaded_file.read()
         
-        # Validate model type - now allowing additional model types
-        supported_models = ["resnet18", "resnet50", "efficientnet", "densenet", "mobilenet", "custom"]
+        # Validate model type - now including custom models
+        supported_models = ["resnet18", "resnet50", "vision-transformer", "custom", "efficientnet", "densenet", "mobilenet"]
         
         if model_type not in supported_models:
             # If not in our supported list, automatically assign to "custom"
@@ -3038,151 +3678,142 @@ async def import_pretrained_model(
             tmp.write(content)
             tmp_path = tmp.name
         
-        # Initialize model architecture based on type
-        if model_type == "custom":
-            # For custom models, we'll need to initialize one of our standard architectures 
-            # and then adapt it to match the imported model's structure
-            fallback_model_type = "resnet50"  # Use this as fallback
-            
-            # Initialize project with fallback model
-            if not al_manager.project_name:
-                init_result = al_manager.initialize_project(
-                    project_name=project_name,
-                    model_name=fallback_model_type,
-                    num_classes=num_classes
-                )
-        else:
-            # Initialize project with specified model
-            if not al_manager.project_name:
-                init_result = al_manager.initialize_project(
-                    project_name=project_name,
-                    model_name=model_type,
-                    num_classes=num_classes
-                )
-        
-        # Try to load the model using our safe utility
+        # Use safe model loading
         state_dict = safe_load_model(tmp_path)
         
         if state_dict is None:
-            # Clean up
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-                
-            raise ValueError("Failed to load model file with any method. The file may be corrupted or in an unsupported format.")
-            
+            os.unlink(tmp_path)
+            raise ValueError("Failed to load model file. The file may be corrupted or in an unsupported format.")
+        
         # Extract the model state based on the structure
         model_state = extract_model_state(state_dict)
         
-        # Handle custom model structure (architecture adaptation)
+        # For custom models, try to auto-detect the architecture and classes
         if model_type == "custom":
-            # Try to detect the number of classes from the model state
+            print("Processing custom model...")
+            
+            # Try to detect the model type and number of classes
             try:
-                detected_classes = detect_num_classes(model_state)
-                if detected_classes and detected_classes != num_classes:
-                    print(f"Detected {detected_classes} classes in model, updating from {num_classes}")
-                    num_classes = detected_classes
+                detected_info = analyze_model_structure(state_dict)
+                print(f"Detected model info: {detected_info}")
+                
+                if detected_info["detected_type"] != "unknown":
+                    print(f"Auto-detected model type: {detected_info['detected_type']}")
+                    # You could optionally override the model_type here
+                    # model_type = detected_info["detected_type"]
+                
+                if detected_info["num_classes"] and detected_info["num_classes"] != num_classes:
+                    print(f"Auto-detected {detected_info['num_classes']} classes, updating from {num_classes}")
+                    num_classes = detected_info["num_classes"]
                     
-                    # Reinitialize the model with detected class count
-                    init_result = al_manager.initialize_project(
-                        project_name=project_name,
-                        model_name=fallback_model_type,
-                        num_classes=num_classes
-                    )
-            except Exception as e:
-                print(f"Could not detect classes: {str(e)}")
+            except Exception as detection_error:
+                print(f"Could not auto-detect model structure: {detection_error}")
         
-        # Attempt to load the state dict with flexible matching
-        try:
-            # First try direct loading
-            al_manager.model.load_state_dict(model_state, strict=False)
-            print("Loaded model state with non-strict matching")
-        except Exception as e:
-            print(f"Direct loading error: {str(e)}")
-            
-            # Try key remapping for common patterns
-            fixed_state_dict = {}
-            for k, v in model_state.items():
-                # Remove 'module.' prefix (from DataParallel models)
-                if k.startswith('module.'):
-                    fixed_state_dict[k[7:]] = v
-                # Add 'module.' prefix if needed
-                elif not k.startswith('module.') and f'module.{k}' in al_manager.model.state_dict():
-                    fixed_state_dict[f'module.{k}'] = v
-                else:
-                    fixed_state_dict[k] = v
-            
-            # Attempt to load with fixed keys
-            missing_keys, unexpected_keys = al_manager.model.load_state_dict(fixed_state_dict, strict=False)
-            print(f"Loaded with key fixing. Missing: {len(missing_keys)}, Unexpected: {len(unexpected_keys)}")
+        # Initialize project with the detected/specified model type
+        if not al_manager.project_name:
+            init_result = al_manager.initialize_project(
+                project_name=project_name,
+                model_name=model_type,  # This can now be "custom"
+                num_classes=num_classes
+            )
+        
+        # For custom models, use the enhanced loading method
+        if model_type == "custom":
+            success = al_manager.load_custom_model_weights(model_state, num_classes)
+            if not success:
+                # Fallback to standard loading
+                try:
+                    missing_keys, unexpected_keys = al_manager.model.load_state_dict(model_state, strict=False)
+                    print(f"Loaded custom model with missing keys: {len(missing_keys)}, unexpected keys: {len(unexpected_keys)}")
+                except Exception as load_error:
+                    print(f"Custom model loading failed: {load_error}")
+                    raise ValueError(f"Failed to load custom model: {load_error}")
+        else:
+            # Standard loading for known architectures
+            try:
+                al_manager.model.load_state_dict(model_state, strict=False)
+                print("Loaded model state with non-strict matching")
+            except Exception as e:
+                print(f"Standard loading error: {str(e)}")
+                
+                # Try key remapping for common patterns
+                fixed_state_dict = {}
+                for k, v in model_state.items():
+                    if k.startswith('module.'):
+                        fixed_state_dict[k[7:]] = v
+                    elif not k.startswith('module.') and f'module.{k}' in al_manager.model.state_dict():
+                        fixed_state_dict[f'module.{k}'] = v
+                    else:
+                        fixed_state_dict[k] = v
+                
+                missing_keys, unexpected_keys = al_manager.model.load_state_dict(fixed_state_dict, strict=False)
+                print(f"Loaded with key fixing. Missing: {len(missing_keys)}, Unexpected: {len(unexpected_keys)}")
         
         # Clean up
         os.unlink(tmp_path)
         
+        # Get model info for response
+        model_info = al_manager.get_model_info()
+        
         return {
             "status": "success",
-            "message": "Pre-trained model imported successfully",
+            "message": f"{'Custom' if model_type == 'custom' else model_type.title()} model imported successfully",
             "project_name": project_name,
             "model_type": model_type,
-            "num_classes": num_classes
+            "num_classes": num_classes,
+            "model_info": model_info,
+            "detected_architecture": detected_info.get("detected_type", "unknown") if model_type == "custom" else model_type
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
-
-@app.post("/verify-model-compatibility")
-async def verify_model_compatibility(uploaded_file: UploadFile = File(...)):
+    
+@app.post("/verify-custom-model")
+async def verify_custom_model(uploaded_file: UploadFile = File(...)):
     """
-    Check if a model file is compatible with the system before fully importing it
+    Verify and analyze a custom model file before importing
     """
     try:
-        # Read model file
         content = await uploaded_file.read()
         
-        # Create temp file
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
             tmp.write(content)
             tmp_path = tmp.name
         
         try:
-            # Try to load the model using our safe utility
+            # Try to load and analyze the model
             state_dict = safe_load_model(tmp_path)
             
             if state_dict is None:
-                # Clean up
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-                    
+                os.unlink(tmp_path)
                 return {
                     "status": "error",
                     "compatible": False,
-                    "message": "Unable to load model file with any method. The file may be corrupted or in an unsupported format."
+                    "message": "Unable to load model file. File may be corrupted or in an unsupported format."
                 }
             
             # Analyze the model structure
             model_info = analyze_model_structure(state_dict)
-            print(f"Model info: {model_info}")
             
-            # Clean up
             os.unlink(tmp_path)
             
             return {
                 "status": "success",
-                "compatible": model_info["compatible"],
-                "model_type": model_info["detected_type"],
-                "num_classes": model_info["num_classes"],
-                "adaptation_needed": model_info["adaptation_needed"],
-                "message": model_info["message"]
+                "compatible": True,
+                "analysis": model_info,
+                "recommended_model_type": model_info.get("detected_type", "custom"),
+                "detected_classes": model_info.get("num_classes"),
+                "message": f"Custom model analysis complete. Detected: {model_info.get('detected_type', 'unknown')} architecture"
             }
             
-        except Exception as e:
-            # Clean up temp file
+        except Exception as analysis_error:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
-                
+            
             return {
-                "status": "error",
+                "status": "error", 
                 "compatible": False,
-                "message": f"Error analyzing model file: {str(e)}"
+                "message": f"Error analyzing custom model: {str(analysis_error)}"
             }
             
     except Exception as e:
@@ -4007,24 +4638,25 @@ async def upload_csv_paths_with_labels(
                 val_indices = labeled_images[:val_size]
                 remaining_labeled = labeled_images[val_size:]
                 
-                # Move validation images to validation set (keep their labels!)
+                # Move validation images to validation set (KEEP their labels for initial training!)
                 for idx in val_indices:
                     if idx in al_manager.labeled_data:
                         img_tensor, label = al_manager.labeled_data.pop(idx)
-                        al_manager.validation_data[idx] = (img_tensor, label)
+                        al_manager.validation_data[idx] = (img_tensor, label)  # Keep the label!
                 
                 labeled_images = remaining_labeled
+                print(f"Moved {len(val_indices)} labeled images to validation set WITH labels")
         
         # Handle unlabeled images for validation if needed
         val_size_unlabeled = int(len(unlabeled_images) * val_split)
         val_indices_unlabeled = unlabeled_images[:val_size_unlabeled] if val_size_unlabeled > 0 else []
         remaining_unlabeled = unlabeled_images[val_size_unlabeled:] if val_size_unlabeled > 0 else unlabeled_images
         
-        # Move unlabeled validation images
+        # Move unlabeled validation images (these have no labels)
         for idx in val_indices_unlabeled:
             if idx in al_manager.unlabeled_data:
                 img_tensor = al_manager.unlabeled_data.pop(idx)
-                al_manager.validation_data[idx] = (img_tensor, None)
+                al_manager.validation_data[idx] = (img_tensor, None)  # No label
         
         print(f"Final label mapping used: {label_to_index}")
         print(f"Processing complete: {len(labeled_images)} labeled, {len(remaining_unlabeled)} unlabeled, {len(al_manager.validation_data)} validation")
@@ -4487,6 +5119,105 @@ def adapt_model_state_dict(saved_state, target_state):
     print(f"Adapted state final keys: {len(adapted_state)} keys")
     return adapted_state
 
+def evaluate_model_on_unlabeled(self, num_samples=10):
+    """
+    Evaluate model performance on a sample of unlabeled data
+    Returns predictions with confidence scores for the next batch of images
+    """
+    try:
+        if not self.model or len(self.unlabeled_data) == 0:
+            return None
+            
+        self.model.eval()
+        
+        # Get a sample of unlabeled data
+        sample_size = min(num_samples, len(self.unlabeled_data))
+        sample_ids = list(self.unlabeled_data.keys())[:sample_size]
+        
+        predictions = []
+        all_confidences = []
+        
+        with torch.no_grad():
+            for img_id in sample_ids:
+                img_tensor = self.unlabeled_data[img_id].unsqueeze(0).to(self.device)
+                outputs = self.model(img_tensor)
+                probs = torch.softmax(outputs, dim=1)
+                
+                # Get top prediction
+                top_prob, top_class = torch.max(probs, dim=1)
+                confidence = float(top_prob.item())
+                predicted_class = int(top_class.item())
+                
+                # Get all class probabilities
+                all_probs = []
+                for i, prob in enumerate(probs[0]):
+                    all_probs.append({
+                        'class_index': i,
+                        'probability': float(prob.item())
+                    })
+                
+                # Sort by probability (highest first)
+                all_probs.sort(key=lambda x: x['probability'], reverse=True)
+                
+                predictions.append({
+                    'image_id': img_id,
+                    'predicted_class': predicted_class,
+                    'confidence': confidence,
+                    'all_probabilities': all_probs
+                })
+                
+                all_confidences.append(confidence)
+        
+        # Calculate overall statistics
+        overall_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0
+        
+        return {
+            'predictions': predictions,
+            'overall_confidence': overall_confidence,
+            'num_evaluated': len(predictions),
+            'episode_info': {
+                'episode': self.episode,
+                'validation_accuracy': self.best_val_acc
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error evaluating model: {str(e)}")
+        return None
+    
+def get_evaluation_batch(self, num_samples=10):
+    """
+    Get the next batch of unlabeled images for evaluation display
+    Similar to get_next_batch but focused on evaluation metrics
+    """
+    try:
+        if not self.model or len(self.unlabeled_data) == 0:
+            return None
+            
+        # Get evaluation data
+        evaluation_data = self.evaluate_model_on_unlabeled(num_samples)
+        
+        if evaluation_data:
+            # Add uncertainty scores for each prediction
+            for pred in evaluation_data['predictions']:
+                # Calculate uncertainty (1 - confidence)
+                pred['uncertainty'] = 1 - pred['confidence']
+                
+                # Add prediction list in the format expected by the UI
+                pred['predictions'] = [
+                    {
+                        'label': f"Class {i}",  # This will be updated with actual labels by the frontend
+                        'confidence': prob['probability']
+                    }
+                    for i, prob in enumerate(pred['all_probabilities'])
+                ]
+        
+        return evaluation_data
+        
+    except Exception as e:
+        print(f"Error getting evaluation batch: {str(e)}")
+        return None
+
 def inspect_and_save_model_info(model, output_path="model_inspection.json"):
     """
     Comprehensive model inspection - saves all model info to JSON for debugging
@@ -4802,6 +5533,101 @@ async def update_project_labels(request: dict):
         al_manager.current_labels = labels
         return {"status": "success", "labels": labels}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/evaluate-model")
+async def evaluate_model(num_samples: int = 10):
+    """Get model evaluation on unlabeled data"""
+    try:
+        if not al_manager.model:
+            raise HTTPException(status_code=400, detail="No model initialized")
+            
+        evaluation_data = al_manager.evaluate_model_on_unlabeled(num_samples)
+        
+        if not evaluation_data:
+            raise HTTPException(status_code=400, detail="Unable to evaluate model - no unlabeled data available")
+            
+        return evaluation_data
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
+
+@app.get("/evaluation-batch") 
+async def get_evaluation_batch(num_samples: int = 10):
+    """Get evaluation batch for display"""
+    try:
+        if not al_manager.model:
+            raise HTTPException(status_code=400, detail="No model initialized")
+            
+        evaluation_data = al_manager.get_evaluation_batch(num_samples)
+        
+        if not evaluation_data:
+            raise HTTPException(status_code=400, detail="No evaluation data available")
+            
+        return evaluation_data
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get evaluation batch: {str(e)}")
+
+@app.post("/continue-from-evaluation")
+async def continue_from_evaluation():
+    """Continue training after evaluation screen"""
+    try:
+        if not al_manager.model:
+            raise HTTPException(status_code=400, detail="No model initialized")
+            
+        # Get the next batch for continuing active learning
+        if len(al_manager.unlabeled_data) == 0:
+            return {
+                "status": "complete",
+                "message": "No more unlabeled data available. Training complete!"
+            }
+            
+        # Get default training config
+        strategy = getattr(automated_trainer, 'training_config', {}).get('sampling_strategy', 'least_confidence')
+        batch_size = getattr(automated_trainer, 'training_config', {}).get('batch_size', 32)
+        
+        # Get next batch using active learning strategy
+        batch = al_manager.get_next_batch(strategy, min(batch_size, len(al_manager.unlabeled_data)))
+        
+        return {
+            "status": "success", 
+            "message": f"Ready to continue with {len(batch)} new images for labeling",
+            "batch_size": len(batch)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to continue from evaluation: {str(e)}")
+
+@app.post("/train-episode")
+async def train_episode(
+    epochs: int = 10,
+    batch_size: int = 32,
+    learning_rate: float = 0.001
+):
+    """Train a single episode and get next batch"""
+    try:
+        if not al_manager.model:
+            raise HTTPException(
+                status_code=400, 
+                detail="Model not initialized. Please initialize project first."
+            )
+            
+        if len(al_manager.labeled_data) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="No labeled data available for training"
+            )
+        
+        # Train the episode using the existing train_episode method
+        result = al_manager.train_episode(epochs, batch_size, learning_rate)
+        
+        return result
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"Train episode endpoint error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")

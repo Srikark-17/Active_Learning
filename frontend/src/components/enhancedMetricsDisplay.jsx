@@ -42,27 +42,37 @@ const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
     Math.max(...(accuracyData.map((d) => d.episode) || [0])) ||
     0;
 
-  const bestValidationAccuracy =
-    // Get best from episode history
-    (episode_history?.length > 0
-      ? Math.max(
-          ...episode_history
-            .map((ep) => ep.best_val_acc || 0)
-            .filter((acc) => acc > 0),
-          0
-        )
-      : 0) ||
-    // Fallback to metrics
-    metrics?.best_val_acc ||
-    // Fallback to accuracy data
-    (accuracyData?.length > 0
-      ? Math.max(
-          ...accuracyData.map((d) => d.accuracy).filter((acc) => acc > 0),
-          0
-        )
-      : 0) ||
+  const bestValidationAccuracy = (() => {
+    // First check if we have explicit best_val_acc from metrics
+    if (metrics?.best_val_acc && metrics.best_val_acc > 0) {
+      return metrics.best_val_acc;
+    }
+
+    // Check episode history for best accuracy
+    if (episode_history?.length > 0) {
+      const validAccuracies = episode_history
+        .map((ep) => ep.best_val_acc || ep.validation_accuracy || 0)
+        .filter((acc) => acc > 0);
+
+      if (validAccuracies.length > 0) {
+        return Math.max(...validAccuracies);
+      }
+    }
+
+    // Check accuracy data array
+    if (accuracyData?.length > 0) {
+      const validAccuracies = accuracyData
+        .map((d) => d.accuracy)
+        .filter((acc) => acc > 0);
+
+      if (validAccuracies.length > 0) {
+        return Math.max(...validAccuracies);
+      }
+    }
+
     // Final fallback
-    0;
+    return 0;
+  })();
 
   return (
     <Card className="mb-4">

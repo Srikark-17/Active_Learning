@@ -407,8 +407,8 @@ const activeLearnAPI = {
   async importPretrainedModel(file, modelType, numClasses, projectName) {
     const formData = new FormData();
     formData.append("uploaded_file", file);
-    formData.append("model_type", modelType);
-    formData.append("num_classes", numClasses);
+    formData.append("model_type", modelType); // Can now be "custom"
+    formData.append("num_classes", numClasses.toString());
     formData.append("project_name", projectName);
 
     const response = await fetch(`${API_URL}/import-pretrained-model`, {
@@ -419,6 +419,40 @@ const activeLearnAPI = {
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || "Failed to import pre-trained model");
+    }
+
+    return await response.json();
+  },
+
+  async verifyModelCompatibility(file) {
+    const formData = new FormData();
+    formData.append("uploaded_file", file);
+
+    const response = await fetch(`${API_URL}/verify-model-compatibility`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to verify model compatibility");
+    }
+
+    return await response.json();
+  },
+
+  async verifyCustomModel(file) {
+    const formData = new FormData();
+    formData.append("uploaded_file", file);
+
+    const response = await fetch(`${API_URL}/verify-custom-model`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to verify custom model");
     }
 
     return await response.json();
@@ -626,6 +660,41 @@ const activeLearnAPI = {
       throw new Error(error.detail || "Failed to update project labels");
     }
 
+    return response.json();
+  },
+
+  async evaluateModel(numSamples = 10) {
+    const response = await fetch(
+      `${API_URL}/evaluate-model?num_samples=${numSamples}`
+    );
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to evaluate model");
+    }
+    return response.json();
+  },
+
+  // Get evaluation batch for display
+  async getEvaluationBatch(numSamples = 10) {
+    const response = await fetch(
+      `${API_URL}/evaluation-batch?num_samples=${numSamples}`
+    );
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to get evaluation batch");
+    }
+    return response.json();
+  },
+
+  // Continue training after evaluation screen
+  async continueFromEvaluation() {
+    const response = await fetch(`${API_URL}/continue-from-evaluation`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Failed to continue from evaluation");
+    }
     return response.json();
   },
 };

@@ -1015,12 +1015,12 @@
         2048
       ],
       "layer4.2.bn3.num_batches_tracked": [],
-      "fc.1.weight": [
-        512,
+      "fc.weight": [
+        2,
         2048
       ],
-      "fc.1.bias": [
-        512
+      "fc.bias": [
+        2
       ]
     },
     "parameter_names": [
@@ -1342,8 +1342,8 @@
       "layer4.2.bn3.running_mean",
       "layer4.2.bn3.running_var",
       "layer4.2.bn3.num_batches_tracked",
-      "fc.1.weight",
-      "fc.1.bias"
+      "fc.weight",
+      "fc.bias"
     ],
     "first_20_keys": [
       "conv1.weight",
@@ -1386,8 +1386,8 @@
       "layer4.2.bn3.running_mean",
       "layer4.2.bn3.running_var",
       "layer4.2.bn3.num_batches_tracked",
-      "fc.1.weight",
-      "fc.1.bias"
+      "fc.weight",
+      "fc.bias"
     ]
   },
   "architecture_detection": {
@@ -1712,8 +1712,8 @@
     "vit_keys": [],
     "attention_keys": [],
     "classifier_keys": [
-      "fc.1.weight",
-      "fc.1.bias"
+      "fc.weight",
+      "fc.bias"
     ]
   },
   "layer_analysis": {
@@ -1769,7 +1769,7 @@
       "layer4.2.conv3.weight"
     ],
     "linear_layers": [
-      "fc.1.weight"
+      "fc.weight"
     ],
     "norm_layers": [
       "bn1.weight",
@@ -1826,7 +1826,7 @@
   },
   "model_structure": {
     "num_children": 10,
-    "num_modules": 153,
+    "num_modules": 151,
     "named_children": [
       [
         "conv1",
@@ -1866,7 +1866,7 @@
       ],
       [
         "fc",
-        "<class 'torch.nn.modules.container.Sequential'>"
+        "<class 'torch.nn.modules.linear.Linear'>"
       ]
     ],
     "child_types": [
@@ -1879,27 +1879,27 @@
       "<class 'torch.nn.modules.container.Sequential'>",
       "<class 'torch.nn.modules.container.Sequential'>",
       "<class 'torch.nn.modules.pooling.AdaptiveAvgPool2d'>",
-      "<class 'torch.nn.modules.container.Sequential'>"
+      "<class 'torch.nn.modules.linear.Linear'>"
     ],
     "has_fc": true,
     "has_classifier": false,
     "has_head": false,
     "has_features": false,
     "fc_info": {
-      "type": "<class 'torch.nn.modules.container.Sequential'>",
-      "repr": "Sequential(\n  (0): Dropout(p=0.5, inplace=False)\n  (1): Linear(in_features=2048, out_features=512, bias=True)\n)",
-      "has_in_features": false,
-      "has_out_features": false,
-      "in_features": null,
-      "out_features": null
+      "type": "<class 'torch.nn.modules.linear.Linear'>",
+      "repr": "Linear(in_features=2048, out_features=2, bias=True)",
+      "has_in_features": true,
+      "has_out_features": true,
+      "in_features": 2048,
+      "out_features": 2
     }
   },
   "pytorch_model_info": {
     "device": "cpu",
     "dtype": "torch.float32",
     "requires_grad": true,
-    "total_parameters": 24557120,
-    "trainable_parameters": 1049088,
+    "total_parameters": 23512130,
+    "trainable_parameters": 23512130,
     "is_training": false
   },
   "detection_result": {
@@ -1908,6 +1908,7 @@
     "reasoning": [
       "Found ResNet layer structure (layer1, layer2, etc.)"
     ],
+    "variant": "resnet50",
     "class_name_suggests": "resnet"
   }
 }

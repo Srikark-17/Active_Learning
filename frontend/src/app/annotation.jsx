@@ -11,7 +11,14 @@ import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { RadioGroup, RadioGroupItem } from "../components/ui/radio-group";
-import { AlertCircle, Download, Plus, Trash2, CheckCircle, Info } from "lucide-react";
+import {
+  AlertCircle,
+  Download,
+  Plus,
+  Trash2,
+  CheckCircle,
+  Info,
+} from "lucide-react";
 import {
   Tabs,
   TabsContent,
@@ -34,6 +41,7 @@ import CheckpointControls from "@/components/checkpointControls";
 import ProjectImport from "@/components/projectImport";
 import PretrainedModelImport from "@/components/pretrainedModel";
 import ModelAdaptationControls from "@/components/modelAdaptationControls";
+import ModelEvaluationScreen from "@/components/modelEvaluationScreen";
 
 const ActiveLearningUI = () => {
   // Project Configuration State
@@ -43,7 +51,7 @@ const ActiveLearningUI = () => {
   const [activeTab, setActiveTab] = useState("new");
   const [loadedImages, setLoadedImages] = useState([]);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
-  const [message, setMessage] = useState({ text: null, type: 'error' });
+  const [message, setMessage] = useState({ text: null, type: "error" });
 
   // Active Learning State
   const [samplingStrategy, setSamplingStrategy] = useState("least_confidence");
@@ -101,43 +109,42 @@ const ActiveLearningUI = () => {
   });
   const [lrHistory, setLrHistory] = useState();
   const fileDataRef = useRef(null);
+  const [showEvaluationScreen, setShowEvaluationScreen] = useState(false);
+  const [evaluationData, setEvaluationData] = useState(null);
 
   const setErrorMessage = (text) => {
-    setMessage({ text, type: 'error' });
+    setMessage({ text, type: "error" });
   };
 
   const setSuccessMessage = (text) => {
-    setMessage({ text, type: 'success' });
+    setMessage({ text, type: "success" });
   };
 
   const setInfoMessage = (text) => {
-    setMessage({ text, type: 'info' });
+    setMessage({ text, type: "info" });
   };
 
-  const clearMessage = () => {
-    setMessage({ text: null, type: 'error' });
-  };
   // Helper function to get the appropriate alert variant and icon
   const getAlertProps = (messageType) => {
     switch (messageType) {
-      case 'success':
+      case "success":
         return {
-          variant: 'default',
-          className: 'border-green-200 bg-green-50 text-green-800',
-          icon: CheckCircle
+          variant: "default",
+          className: "border-green-200 bg-green-50 text-green-800",
+          icon: CheckCircle,
         };
-      case 'info':
+      case "info":
         return {
-          variant: 'default',
-          className: 'border-blue-200 bg-blue-50 text-blue-800',
-          icon: Info
+          variant: "default",
+          className: "border-blue-200 bg-blue-50 text-blue-800",
+          icon: Info,
         };
-      case 'error':
+      case "error":
       default:
         return {
-          variant: 'destructive',
-          className: '',
-          icon: AlertCircle
+          variant: "destructive",
+          className: "",
+          icon: AlertCircle,
         };
     }
   };
@@ -533,6 +540,7 @@ const ActiveLearningUI = () => {
       );
     }
   };
+
   const handleSubmitLabel = async () => {
     try {
       const imageId = currentBatch[currentImageIndex].image_id;
@@ -551,28 +559,32 @@ const ActiveLearningUI = () => {
       }));
 
       setSelectedLabel("");
-      console.log(`Batch progress: ${newCompleted}/${batchSize}`);
-      console.log("Batch complete?", batch_complete);
 
       if (batch_complete) {
         console.log("Starting episode training...");
         setIsRetraining(true);
-        setInfoMessage("Batch complete - Starting episode training...");
+        setSuccessMessage("Batch complete - Starting episode training...");
 
         try {
           const episodeResult = await activeLearnAPI.startEpisode(
             epochs,
             batchSize
           );
-          console.log("Episode training result:", episodeResult);
 
           if (episodeResult.final_val_acc) {
             setValidationAccuracy(episodeResult.final_val_acc);
           }
 
-          await handleStartNewBatch();
-          setInfoMessage("Episode training complete - New batch loaded");
-          setIsRetraining(false);
+          if (episodeResult.evaluation_data) {
+            console.log("Evaluation data received, showing evaluation screen");
+            await handleEpisodeComplete(episodeResult);
+          } else {
+            // Fallback to old behavior
+            console.log("No evaluation data, proceeding with next batch");
+            await handleStartNewBatch();
+            setErrorMessage("Episode training complete - New batch loaded");
+            setIsRetraining(false);
+          }
         } catch (error) {
           console.error("Episode training error:", error);
           setErrorMessage("Episode training error: " + error.message);
@@ -717,7 +729,7 @@ const ActiveLearningUI = () => {
           `Successfully loaded ${result.stats.total} images (${result.stats.labeled} with labels, ${result.stats.unlabeled} unlabeled, ${result.stats.validation} for validation)`
         );
 
-        // Start training if we have enough labeled data
+        // Start training if we have enough labeled data AND initial training wasn't done automatically
         if (result.stats.labeled > 0) {
           setInfoMessage("Starting initial training with annotated data...");
           try {
@@ -725,13 +737,24 @@ const ActiveLearningUI = () => {
               epochs,
               batchSize
             );
-            if (episodeResult.final_val_acc) {
-              setValidationAccuracy(episodeResult.final_val_acc);
+            if (episodeResult.final_val_acc || episodeResult.best_accuracy) {
+              const accuracy =
+                episodeResult.final_val_acc || episodeResult.best_accuracy;
+              setValidationAccuracy(accuracy);
+              setSuccessMessage(
+                `Initial training complete. Validation accuracy: ${accuracy.toFixed(
+                  2
+                )}%`
+              );
+            } else {
+              setSuccessMessage("Initial training complete");
             }
-            setSuccessMessage("Initial training complete");
           } catch (error) {
             console.error("Initial training error:", error);
-            setErrorMessage("Initial training error: " + error.message);
+            // If initial training fails, still proceed but show warning
+            setInfoMessage(
+              "Initial training encountered issues, but data is loaded. You can continue with manual training."
+            );
           }
         }
       }
@@ -891,6 +914,105 @@ Possible solutions:
       }
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleEpisodeComplete = async (episodeResult) => {
+    try {
+      setErrorMessage("Episode training complete! Loading model evaluation...");
+
+      // Get evaluation data
+      const evaluation = await activeLearnAPI.getEvaluationBatch(10);
+
+      if (evaluation) {
+        setEvaluationData(evaluation);
+        setShowEvaluationScreen(true);
+        setErrorMessage(null);
+      } else {
+        // Fallback to normal batch continuation
+        await handleStartNewBatch();
+        setErrorMessage("Episode training complete - New batch loaded");
+      }
+
+      setIsRetraining(false);
+    } catch (error) {
+      console.error("Error getting evaluation data:", error);
+      // Fallback to normal behavior
+      await handleStartNewBatch();
+      setErrorMessage("Episode training complete - New batch loaded");
+      setIsRetraining(false);
+    }
+  };
+
+  const handleContinueFromEvaluation = async () => {
+    try {
+      setErrorMessage("Preparing next batch for active learning...");
+
+      const result = await activeLearnAPI.continueFromEvaluation();
+
+      if (result.status === "complete") {
+        setErrorMessage(result.message);
+      } else {
+        await getNextBatch();
+        setErrorMessage("Ready to continue active learning!");
+        setBatchStats({
+          totalImages: batchSize,
+          completed: 0,
+          remaining: batchSize,
+          accuracy: validationAccuracy || 0,
+          timeElapsed: "00:00",
+        });
+      }
+
+      setShowEvaluationScreen(false);
+      setEvaluationData(null);
+    } catch (error) {
+      console.error("Error continuing from evaluation:", error);
+      setErrorMessage("Error preparing next batch: " + error.message);
+    }
+  };
+
+  const handleExportFromEvaluation = async () => {
+    try {
+      // Update labels first
+      if (labels.length > 0) {
+        await activeLearnAPI.updateProjectLabels(labels);
+      }
+
+      const response = await fetch(`http://localhost:8000/export-project`, {
+        method: "GET",
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to export project: ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+
+      const contentDisposition = response.headers.get("content-disposition");
+      let filename = `${projectName}_project_${new Date()
+        .toISOString()
+        .slice(0, 10)}.zip`;
+
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="([^"]+)"/);
+        if (filenameMatch) {
+          filename = filenameMatch[1];
+        }
+      }
+
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+      setErrorMessage("Project exported successfully from evaluation!");
+    } catch (error) {
+      setErrorMessage("Failed to export project: " + error.message);
     }
   };
 
@@ -1161,137 +1283,1108 @@ Possible solutions:
 
   return (
     <>
-      <div className="flex px-5 pt-5 pb-3 h-1/6 items-center justify-between">
-        <div className="flex items-center gap-4 h-20 w-fit">
-          <img
-            className="h-20"
-            src="hms.png"
-            alt="Harvard Medical School Logo"
-          />
-          <img
-            className="h-16"
-            src="meei.jpg"
-            alt="Mass Eye and Ear Institute Logo"
-          />
-        </div>
-      </div>
-      <div className="container mx-auto p-6">
-        <div className="grid grid-cols-2 gap-6">
-          {/* Left Column - Project Configuration */}
-          <div>
-            <Tabs
-              value={activeTab}
-              onValueChange={setActiveTab}
-              className="mb-6"
-            >
-              <TabsList className="grid grid-cols-2">
-                <TabsTrigger value="new">New Project</TabsTrigger>
-                <TabsTrigger value="import">Import Project</TabsTrigger>
-              </TabsList>
-              <TabsContent value="new">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Project Configuration</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-6">
-                      <div className="space-y-3">
-                        <RadioGroup
-                          value={projectType}
-                          onValueChange={setProjectType}
-                          className="flex gap-6"
-                        >
-                          <div className="flex items-center space-x-2">
-                            <RadioGroupItem value="new" id="new-model" />
-                            <Label htmlFor="new-model">Create New Model</Label>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <RadioGroupItem
-                              value="pretrained"
-                              id="pretrained-model"
-                            />
-                            <Label htmlFor="pretrained-model">
-                              Import Pretrained Model
-                            </Label>
-                          </div>
-                        </RadioGroup>
-                      </div>
-                      {projectType === "new" ? (
-                        <>
-                          {/* New Model Configuration */}
-                          <div>
-                            <Label htmlFor="project-name">Project Name</Label>
-                            <Input
-                              id="project-name"
-                              value={projectName}
-                              onChange={(e) => setProjectName(e.target.value)}
-                              className="mt-1"
-                              disabled={isInitialized}
-                              placeholder="Enter project name"
-                            />
-                          </div>
-
-                          <div>
-                            <Label>Model Selection</Label>
-                            <Select
-                              value={selectedModel}
-                              onValueChange={setSelectedModel}
-                              disabled={isInitialized}
+      {showEvaluationScreen ? (
+        <ModelEvaluationScreen
+          evaluationData={evaluationData}
+          onContinueTraining={handleContinueFromEvaluation}
+          onExportModel={handleExportFromEvaluation}
+          labels={labels}
+          currentEpisode={status.current_episode || 0}
+        />
+      ) : (
+        <>
+          <div className="flex px-5 pt-5 pb-3 h-1/6 items-center justify-between">
+            <div className="flex items-center gap-4 h-20 w-fit">
+              <img
+                className="h-20"
+                src="hms.png"
+                alt="Harvard Medical School Logo"
+              />
+              <img
+                className="h-16"
+                src="meei.jpg"
+                alt="Mass Eye and Ear Institute Logo"
+              />
+            </div>
+          </div>
+          <div className="container mx-auto p-6">
+            <div className="grid grid-cols-2 gap-6">
+              {/* Left Column - Project Configuration */}
+              <div>
+                <Tabs
+                  value={activeTab}
+                  onValueChange={setActiveTab}
+                  className="mb-6"
+                >
+                  <TabsList className="grid grid-cols-2">
+                    <TabsTrigger value="new">New Project</TabsTrigger>
+                    <TabsTrigger value="import">Import Project</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="new">
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Project Configuration</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-6">
+                          <div className="space-y-3">
+                            <RadioGroup
+                              value={projectType}
+                              onValueChange={setProjectType}
+                              className="flex gap-6"
                             >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select model" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="resnet18">
-                                  ResNet18
-                                </SelectItem>
-                                <SelectItem value="resnet50">
-                                  ResNet50
-                                </SelectItem>
-                              </SelectContent>
-                            </Select>
-                          </div>
-
-                          {/* Label Management */}
-                          <div>
-                            <Label>Labels</Label>
-                            {labels.map((label, index) => (
-                              <div key={index} className="flex gap-2 mt-2">
-                                <Input
-                                  value={label}
-                                  onChange={(e) =>
-                                    handleLabelChange(index, e.target.value)
-                                  }
-                                  placeholder={`Label ${index + 1}`}
-                                />
-                                {labels.length > 1 && (
-                                  <Button
-                                    variant="outline"
-                                    size="icon"
-                                    onClick={() => handleRemoveLabel(index)}
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                )}
+                              <div className="flex items-center space-x-2">
+                                <RadioGroupItem value="new" id="new-model" />
+                                <Label htmlFor="new-model">
+                                  Create New Model
+                                </Label>
                               </div>
-                            ))}
-                            <Button
-                              variant="outline"
-                              onClick={handleAddLabel}
-                              className="w-full mt-2"
-                            >
-                              <Plus className="h-4 w-4 mr-2" />
-                              Add Label
-                            </Button>
+                              <div className="flex items-center space-x-2">
+                                <RadioGroupItem
+                                  value="pretrained"
+                                  id="pretrained-model"
+                                />
+                                <Label htmlFor="pretrained-model">
+                                  Import Pretrained Model
+                                </Label>
+                              </div>
+                            </RadioGroup>
+                          </div>
+                          {projectType === "new" ? (
+                            <>
+                              {/* New Model Configuration */}
+                              <div>
+                                <Label htmlFor="project-name">
+                                  Project Name
+                                </Label>
+                                <Input
+                                  id="project-name"
+                                  value={projectName}
+                                  onChange={(e) =>
+                                    setProjectName(e.target.value)
+                                  }
+                                  className="mt-1"
+                                  disabled={isInitialized}
+                                  placeholder="Enter project name"
+                                />
+                              </div>
+
+                              <div>
+                                <Label>Model Selection</Label>
+                                <Select
+                                  value={selectedModel}
+                                  onValueChange={setSelectedModel}
+                                  disabled={isInitialized}
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select model" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="resnet18">
+                                      ResNet18
+                                    </SelectItem>
+                                    <SelectItem value="resnet50">
+                                      ResNet50
+                                    </SelectItem>
+                                    <SelectItem value="vision-transformer">
+                                      Vision Transformer (ViT)
+                                    </SelectItem>
+                                    <SelectItem value="custom">
+                                      Custom Model
+                                    </SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+
+                              {/* Label Management */}
+                              <div>
+                                <Label>Labels</Label>
+                                {labels.map((label, index) => (
+                                  <div key={index} className="flex gap-2 mt-2">
+                                    <Input
+                                      value={label}
+                                      onChange={(e) =>
+                                        handleLabelChange(index, e.target.value)
+                                      }
+                                      placeholder={`Label ${index + 1}`}
+                                    />
+                                    {labels.length > 1 && (
+                                      <Button
+                                        variant="outline"
+                                        size="icon"
+                                        onClick={() => handleRemoveLabel(index)}
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </Button>
+                                    )}
+                                  </div>
+                                ))}
+                                <Button
+                                  variant="outline"
+                                  onClick={handleAddLabel}
+                                  className="w-full mt-2"
+                                >
+                                  <Plus className="h-4 w-4 mr-2" />
+                                  Add Label
+                                </Button>
+                              </div>
+
+                              {/* Sampling Strategy Controls */}
+                              {/* Training Parameters Card */}
+                              <Card className="p-4">
+                                <CardHeader className="pb-2 px-0">
+                                  <CardTitle className="text-lg">
+                                    Training Parameters
+                                  </CardTitle>
+                                </CardHeader>
+                                <CardContent className="px-0">
+                                  <div className="grid grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                      <Label>Sampling Strategy</Label>
+                                      <Select
+                                        value={samplingStrategy}
+                                        onValueChange={setSamplingStrategy}
+                                        disabled={batchStats.completed > 0}
+                                      >
+                                        <SelectTrigger>
+                                          <SelectValue placeholder="Select strategy" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <SelectItem value="least_confidence">
+                                            Least Confidence
+                                          </SelectItem>
+                                          <SelectItem value="margin">
+                                            Margin Sampling
+                                          </SelectItem>
+                                          <SelectItem value="entropy">
+                                            Entropy
+                                          </SelectItem>
+                                          <SelectItem value="diversity">
+                                            Diversity-based
+                                          </SelectItem>
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                      <Label>Learning Rate Strategy</Label>
+                                      <Select
+                                        value={lrConfig.strategy}
+                                        onValueChange={(value) =>
+                                          setLrConfig((prev) => ({
+                                            ...prev,
+                                            strategy: value,
+                                          }))
+                                        }
+                                        disabled={isRetraining}
+                                      >
+                                        <SelectTrigger>
+                                          <SelectValue placeholder="Select LR strategy" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <SelectItem value="plateau">
+                                            Reduce on Plateau
+                                          </SelectItem>
+                                          <SelectItem value="cosine">
+                                            Cosine Annealing
+                                          </SelectItem>
+                                          <SelectItem value="warmup">
+                                            One Cycle with Warmup
+                                          </SelectItem>
+                                          <SelectItem value="step">
+                                            Step Decay
+                                          </SelectItem>
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                  </div>
+
+                                  <div className="grid grid-cols-3 gap-4 mt-4">
+                                    <div className="space-y-2">
+                                      <Label>Initial Learning Rate</Label>
+                                      <Input
+                                        type="number"
+                                        value={lrConfig.initial_lr}
+                                        onChange={(e) =>
+                                          setLrConfig((prev) => ({
+                                            ...prev,
+                                            initial_lr: parseFloat(
+                                              e.target.value
+                                            ),
+                                          }))
+                                        }
+                                        min={0.0001}
+                                        max={0.1}
+                                        step={0.0001}
+                                        disabled={isRetraining}
+                                      />
+                                    </div>
+
+                                    <div className="space-y-2">
+                                      <Label>Batch Size</Label>
+                                      <Input
+                                        type="number"
+                                        value={batchSize}
+                                        onChange={(e) => {
+                                          const newBatchSize = Number(
+                                            e.target.value
+                                          );
+                                          setBatchSize(newBatchSize);
+                                          setBatchStats((prev) => ({
+                                            ...prev,
+                                            totalImages: newBatchSize,
+                                            remaining: newBatchSize,
+                                          }));
+                                        }}
+                                        min={1}
+                                        max={100}
+                                        disabled={
+                                          isRetraining ||
+                                          batchStats.completed > 0
+                                        }
+                                      />
+                                    </div>
+
+                                    <div className="space-y-2">
+                                      <Label>Epochs</Label>
+                                      <Input
+                                        type="number"
+                                        value={epochs}
+                                        onChange={(e) => {
+                                          const newEpochs = Number(
+                                            e.target.value
+                                          );
+                                          setEpochs(newEpochs);
+                                        }}
+                                        min={10}
+                                        disabled={isRetraining}
+                                      />
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
+
+                              {/* Data Split Configuration */}
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <Label>Validation Split</Label>
+                                  <div className="flex items-center space-x-2">
+                                    <Input
+                                      type="range"
+                                      min="0.1"
+                                      max="0.3"
+                                      step="0.05"
+                                      value={valSplit}
+                                      onChange={(e) =>
+                                        setValSplit(parseFloat(e.target.value))
+                                      }
+                                      className="flex-1"
+                                    />
+                                    <span className="text-sm w-16 text-right">
+                                      {(valSplit * 100).toFixed(0)}%
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                  <Label>Initial Labeled Ratio</Label>
+                                  <div className="flex items-center space-x-2">
+                                    <Input
+                                      type="range"
+                                      min="0.1"
+                                      max="0.8"
+                                      step="0.05"
+                                      value={initialLabeledRatio}
+                                      onChange={(e) =>
+                                        setInitialLabeledRatio(
+                                          parseFloat(e.target.value)
+                                        )
+                                      }
+                                      className="flex-1"
+                                    />
+                                    <span className="text-sm w-16 text-right">
+                                      {(initialLabeledRatio * 100).toFixed(0)}%
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Data Split Preview */}
+                              {loadedImages.length > 0 && (
+                                <Card className="bg-secondary/50">
+                                  <CardContent className="pt-4">
+                                    <h4 className="font-medium mb-2">
+                                      Data Split Preview
+                                    </h4>
+                                    <div className="space-y-1 text-sm">
+                                      <div className="flex justify-between">
+                                        <span>Total Images:</span>
+                                        <span>{loadedImages.length}</span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span>Validation Set:</span>
+                                        <span>
+                                          {Math.round(
+                                            loadedImages.length * valSplit
+                                          )}{" "}
+                                          images
+                                        </span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span>Initial Labeled Set:</span>
+                                        <span>
+                                          {Math.round(
+                                            loadedImages.length *
+                                              (1 - valSplit) *
+                                              initialLabeledRatio
+                                          )}{" "}
+                                          images
+                                        </span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span>Remaining Unlabeled:</span>
+                                        <span>
+                                          {loadedImages.length -
+                                            Math.round(
+                                              loadedImages.length * valSplit
+                                            ) -
+                                            Math.round(
+                                              loadedImages.length *
+                                                (1 - valSplit) *
+                                                initialLabeledRatio
+                                            )}{" "}
+                                          images
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </CardContent>
+                                </Card>
+                              )}
+
+                              <ImageLoader
+                                onImagesLoaded={handleImagesLoaded}
+                                onError={setErrorMessage}
+                              />
+                            </>
+                          ) : (
+                            <>
+                              <PretrainedModelImport
+                                onImportSuccess={(result) => {
+                                  console.log("=== IMPORT DEBUG ===");
+                                  console.log("Full result:", result);
+
+                                  setProjectName(
+                                    result.project_info.project_name
+                                  );
+                                  const importedModelType =
+                                    result.project_info.model_type ||
+                                    "resnet50";
+                                  setSelectedModel(importedModelType);
+                                  setIsInitialized(true);
+
+                                  // Restore labels from imported project
+                                  if (
+                                    result.labels &&
+                                    result.labels.label_names
+                                  ) {
+                                    setLabels(result.labels.label_names);
+                                    console.log(
+                                      "Restored labels:",
+                                      result.labels.label_names
+                                    );
+                                  } else {
+                                    const numClasses =
+                                      result.project_info.num_classes || 2;
+                                    const defaultLabels = Array.from(
+                                      { length: numClasses },
+                                      (_, i) => `Class ${i + 1}`
+                                    );
+                                    setLabels(defaultLabels);
+                                  }
+
+                                  // Update hyperparameters
+                                  if (result.hyperparameters) {
+                                    setSamplingStrategy(
+                                      result.hyperparameters
+                                        .sampling_strategy || "least_confidence"
+                                    );
+                                    setBatchSize(
+                                      result.hyperparameters.batch_size || 32
+                                    );
+                                    setEpochs(
+                                      result.hyperparameters.epochs || 10
+                                    );
+                                    setValSplit(
+                                      result.hyperparameters.validation_split ||
+                                        0.2
+                                    );
+                                    setInitialLabeledRatio(
+                                      result.hyperparameters
+                                        .initial_labeled_ratio || 0.1
+                                    );
+                                  }
+
+                                  // Update metrics
+                                  if (result.project_info) {
+                                    setValidationAccuracy(
+                                      result.project_info
+                                        .best_validation_accuracy || 0
+                                    );
+                                  }
+
+                                  // **NEW: Handle automatic image loading**
+                                  if (
+                                    result.images_loaded &&
+                                    result.project_ready
+                                  ) {
+                                    setIsProjectFullyInitialized(true);
+                                    setSuccessMessage(
+                                      `Project imported successfully! Model: ${importedModelType}. 
+       Loaded ${result.dataset_stats.loaded_from_annotations} images automatically. 
+       Getting first batch for active learning...`
+                                    );
+
+                                    // Auto-start by getting the first batch
+                                    setTimeout(async () => {
+                                      try {
+                                        await getNextBatch();
+                                        setSuccessMessage(
+                                          `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`
+                                        );
+                                      } catch (error) {
+                                        console.error(
+                                          "Error getting first batch:",
+                                          error
+                                        );
+                                        setErrorMessage(
+                                          `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`
+                                        );
+                                      }
+                                    }, 1000);
+                                  } else if (
+                                    result.dataset_stats
+                                      .loaded_from_annotations > 0
+                                  ) {
+                                    // Some images loaded but project not ready (maybe all labeled)
+                                    setErrorMessage(
+                                      `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`
+                                    );
+                                  } else {
+                                    // No images loaded automatically
+                                    setErrorMessage(
+                                      `${result.message} Images were not found in the expected locations. You can upload new images to continue.`
+                                    );
+                                  }
+
+                                  // Fetch current state
+                                  activeLearnAPI
+                                    .getStatus()
+                                    .then(setStatus)
+                                    .catch(console.error);
+                                  activeLearnAPI
+                                    .getMetrics()
+                                    .then(setMetrics)
+                                    .catch(console.error);
+                                }}
+                                onError={(errorMsg) => {
+                                  setErrorMessage(errorMsg);
+                                }}
+                              />
+
+                              {selectedModel === "custom" && (
+                                <div className="p-3 bg-blue-50 border border-blue-200 rounded">
+                                  <p className="text-sm text-blue-700">
+                                    <strong>Custom Model:</strong> Upload any
+                                    PyTorch model file (.pt, .pth). The system
+                                    will attempt to automatically detect the
+                                    architecture and adapt it for your classes.
+                                  </p>
+                                </div>
+                              )}
+
+                              {modelLoaded && (
+                                <>
+                                  <ModelAdaptationControls
+                                    onAdaptSuccess={(result) => {
+                                      setSuccessMessage(
+                                        `Model adaptation successful using ${result.adaptation_type} strategy`
+                                      );
+                                    }}
+                                    onError={(errorMsg) => {
+                                      setErrorMessage(
+                                        `Adaptation error: ${errorMsg}`
+                                      );
+                                    }}
+                                    disabled={!isInitialized || isRetraining}
+                                  />
+
+                                  {/* Label Management for Pretrained Model */}
+                                  <div>
+                                    <Label>Labels</Label>
+                                    <p className="text-sm text-gray-500 mb-2">
+                                      Define your labels here
+                                    </p>
+                                    {labels.map((label, index) => (
+                                      <div
+                                        key={index}
+                                        className="flex gap-2 mt-2"
+                                      >
+                                        <Input
+                                          value={label}
+                                          onChange={(e) =>
+                                            handleLabelChange(
+                                              index,
+                                              e.target.value
+                                            )
+                                          }
+                                          placeholder={`Label ${index + 1}`}
+                                        />
+                                        {labels.length > 1 && (
+                                          <Button
+                                            variant="outline"
+                                            size="icon"
+                                            onClick={() =>
+                                              handleRemoveLabel(index)
+                                            }
+                                          >
+                                            <Trash2 className="h-4 w-4" />
+                                          </Button>
+                                        )}
+                                      </div>
+                                    ))}
+                                    <div className="flex gap-2 mt-2">
+                                      <Button
+                                        variant="outline"
+                                        onClick={handleAddLabel}
+                                        className="flex-1"
+                                      >
+                                        <Plus className="h-4 w-4 mr-2" />
+                                        Add Label
+                                      </Button>
+                                    </div>
+                                  </div>
+
+                                  {/* Hyperparameters for Pretrained Model */}
+                                  <div className="space-y-4">
+                                    <div className="grid grid-cols-2 gap-4">
+                                      <div className="space-y-2">
+                                        <Label>Sampling Strategy</Label>
+                                        <Select
+                                          value={samplingStrategy}
+                                          onValueChange={setSamplingStrategy}
+                                          disabled={batchStats.completed > 0}
+                                        >
+                                          <SelectTrigger>
+                                            <SelectValue placeholder="Select strategy" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            <SelectItem value="least_confidence">
+                                              Least Confidence
+                                            </SelectItem>
+                                            <SelectItem value="margin">
+                                              Margin Sampling
+                                            </SelectItem>
+                                            <SelectItem value="entropy">
+                                              Entropy
+                                            </SelectItem>
+                                            <SelectItem value="diversity">
+                                              Diversity-based
+                                            </SelectItem>
+                                          </SelectContent>
+                                        </Select>
+                                      </div>
+
+                                      <div className="space-y-2">
+                                        <Label>Learning Rate Strategy</Label>
+                                        <Select
+                                          value={lrConfig.strategy}
+                                          onValueChange={(value) =>
+                                            setLrConfig((prev) => ({
+                                              ...prev,
+                                              strategy: value,
+                                            }))
+                                          }
+                                          disabled={isRetraining}
+                                        >
+                                          <SelectTrigger>
+                                            <SelectValue placeholder="Select LR strategy" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            <SelectItem value="plateau">
+                                              Reduce on Plateau
+                                            </SelectItem>
+                                            <SelectItem value="cosine">
+                                              Cosine Annealing
+                                            </SelectItem>
+                                            <SelectItem value="warmup">
+                                              One Cycle with Warmup
+                                            </SelectItem>
+                                            <SelectItem value="step">
+                                              Step Decay
+                                            </SelectItem>
+                                          </SelectContent>
+                                        </Select>
+                                      </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-3 gap-4">
+                                      <div className="space-y-2">
+                                        <Label>Initial Learning Rate</Label>
+                                        <Input
+                                          type="number"
+                                          value={lrConfig.initial_lr}
+                                          onChange={(e) =>
+                                            setLrConfig((prev) => ({
+                                              ...prev,
+                                              initial_lr: parseFloat(
+                                                e.target.value
+                                              ),
+                                            }))
+                                          }
+                                          min={0.0001}
+                                          max={0.1}
+                                          step={0.0001}
+                                          disabled={isRetraining}
+                                        />
+                                      </div>
+
+                                      <div className="space-y-2">
+                                        <Label>Batch Size</Label>
+                                        <Input
+                                          type="number"
+                                          value={batchSize}
+                                          onChange={(e) => {
+                                            const newBatchSize = Number(
+                                              e.target.value
+                                            );
+                                            setBatchSize(newBatchSize);
+                                            setBatchStats((prev) => ({
+                                              ...prev,
+                                              totalImages: newBatchSize,
+                                              remaining: newBatchSize,
+                                            }));
+                                          }}
+                                          min={1}
+                                          max={100}
+                                          disabled={
+                                            isRetraining ||
+                                            batchStats.completed > 0
+                                          }
+                                        />
+                                      </div>
+
+                                      <div className="space-y-2">
+                                        <Label>Epochs</Label>
+                                        <Input
+                                          type="number"
+                                          value={epochs}
+                                          onChange={(e) => {
+                                            const newEpochs = Number(
+                                              e.target.value
+                                            );
+                                            setEpochs(newEpochs);
+                                          }}
+                                          min={5}
+                                          disabled={isRetraining}
+                                        />
+                                      </div>
+                                    </div>
+
+                                    {/* Data Split Configuration for Pretrained */}
+                                    <div className="grid grid-cols-2 gap-4">
+                                      <div className="space-y-2">
+                                        <Label>Validation Split</Label>
+                                        <div className="flex items-center space-x-2">
+                                          <Input
+                                            type="range"
+                                            min="0.1"
+                                            max="0.3"
+                                            step="0.05"
+                                            value={valSplit}
+                                            onChange={(e) =>
+                                              setValSplit(
+                                                parseFloat(e.target.value)
+                                              )
+                                            }
+                                            className="flex-1"
+                                          />
+                                          <span className="text-sm w-16 text-right">
+                                            {(valSplit * 100).toFixed(0)}%
+                                          </span>
+                                        </div>
+                                      </div>
+
+                                      <div className="space-y-2">
+                                        <Label>Initial Labeled Ratio</Label>
+                                        <div className="flex items-center space-x-2">
+                                          <Input
+                                            type="range"
+                                            min="0.1"
+                                            max="0.8"
+                                            step="0.05"
+                                            value={initialLabeledRatio}
+                                            onChange={(e) =>
+                                              setInitialLabeledRatio(
+                                                parseFloat(e.target.value)
+                                              )
+                                            }
+                                            className="flex-1"
+                                          />
+                                          <span className="text-sm w-16 text-right">
+                                            {(
+                                              initialLabeledRatio * 100
+                                            ).toFixed(0)}
+                                            %
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <ImageLoader
+                                    onImagesLoaded={handleImagesLoaded}
+                                    onError={setErrorMessage}
+                                  />
+                                </>
+                              )}
+                            </>
+                          )}
+
+                          {message.text &&
+                            (() => {
+                              const alertProps = getAlertProps(message.type);
+                              const IconComponent = alertProps.icon;
+                              return (
+                                <Alert
+                                  variant={alertProps.variant}
+                                  className={alertProps.className}
+                                >
+                                  <IconComponent className="h-4 w-4" />
+                                  <AlertDescription>
+                                    {message.text}
+                                  </AlertDescription>
+                                </Alert>
+                              );
+                            })()}
+
+                          <Button
+                            className="w-full"
+                            onClick={handleStartProject}
+                            disabled={
+                              !projectName ||
+                              labels.length === 0 ||
+                              !hasLoadedFiles() ||
+                              isProjectFullyInitialized ||
+                              isLoading
+                            }
+                          >
+                            {isLoading
+                              ? "Initializing Project..."
+                              : isInitialized && !isProjectFullyInitialized
+                              ? "Start Project with Pretrained Model"
+                              : "Start Project"}
+                          </Button>
+                          {isInitialized && (
+                            <AutomatedTrainingControls
+                              onStart={handleStartAutomatedTraining}
+                              onStop={handleStopAutomatedTraining}
+                              status={automatedStatus}
+                              metrics={trainingMetrics}
+                              disabled={!isInitialized}
+                              episode_history={episodeHistory}
+                            />
+                          )}
+
+                          <div>
+                            <ActiveLearningStatus
+                              status={status}
+                              onStartNewBatch={handleStartNewBatch}
+                            />
                           </div>
 
-                          {/* Sampling Strategy Controls */}
-                      {/* Training Parameters Card */}
-                          <Card className="p-4">
-                            <CardHeader className="pb-2 px-0">
-                              <CardTitle className="text-lg">Training Parameters</CardTitle>
-                            </CardHeader>
-                            <CardContent className="px-0">
+                          <CheckpointControls
+                            onSave={handleSaveCheckpoint}
+                            onLoad={handleLoadCheckpoint}
+                            checkpoints={checkpoints}
+                          />
+
+                          <div className="space-y-4">
+                            <div className="flex gap-4">
+                              <Button
+                                onClick={async () => {
+                                  try {
+                                    // ALWAYS send current labels before export
+                                    console.log(
+                                      "Sending labels to backend before export:",
+                                      labels
+                                    );
+
+                                    if (labels.length > 0) {
+                                      const labelResponse = await fetch(
+                                        `http://localhost:8000/update-project-labels`,
+                                        {
+                                          method: "POST",
+                                          headers: {
+                                            "Content-Type": "application/json",
+                                          },
+                                          body: JSON.stringify({
+                                            labels: labels,
+                                          }),
+                                        }
+                                      );
+
+                                      if (!labelResponse.ok) {
+                                        console.warn(
+                                          "Failed to update labels, but continuing with export"
+                                        );
+                                      }
+                                    }
+
+                                    const response = await fetch(
+                                      `http://localhost:8000/export-project`,
+                                      {
+                                        method: "GET",
+                                      }
+                                    );
+
+                                    if (!response.ok) {
+                                      throw new Error(
+                                        `Failed to export project: ${response.statusText}`
+                                      );
+                                    }
+
+                                    const blob = await response.blob();
+                                    const url =
+                                      window.URL.createObjectURL(blob);
+                                    const a = document.createElement("a");
+                                    a.href = url;
+
+                                    const contentDisposition =
+                                      response.headers.get(
+                                        "content-disposition"
+                                      );
+                                    let filename = `${projectName}_project_${new Date()
+                                      .toISOString()
+                                      .slice(0, 10)}.zip`;
+
+                                    if (contentDisposition) {
+                                      const filenameMatch =
+                                        contentDisposition.match(
+                                          /filename="([^"]+)"/
+                                        );
+                                      if (filenameMatch) {
+                                        filename = filenameMatch[1];
+                                      }
+                                    }
+
+                                    a.download = filename;
+                                    document.body.appendChild(a);
+                                    a.click();
+                                    window.URL.revokeObjectURL(url);
+                                    document.body.removeChild(a);
+
+                                    setSuccessMessage(
+                                      "Project exported successfully!"
+                                    );
+                                  } catch (error) {
+                                    setErrorMessage(
+                                      "Failed to export project: " +
+                                        error.message
+                                    );
+                                  }
+                                }}
+                                disabled={!isInitialized || !projectName}
+                              >
+                                <Download className="h-4 w-4 mr-2" />
+                                Export Project
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  <TabsContent value="import">
+                    <ProjectImport
+                      onImportSuccess={(result) => {
+                        console.log("=== IMPORT DEBUG ===");
+                        console.log("Full result:", result);
+
+                        setProjectName(result.project_info.project_name);
+                        const importedModelType =
+                          result.project_info.model_type || "resnet50";
+                        setSelectedModel(importedModelType);
+                        setIsInitialized(true);
+
+                        // Restore labels from imported project
+                        if (result.labels && result.labels.label_names) {
+                          setLabels(result.labels.label_names);
+                          console.log(
+                            "Restored labels:",
+                            result.labels.label_names
+                          );
+                        } else {
+                          const numClasses =
+                            result.project_info.num_classes || 2;
+                          const defaultLabels = Array.from(
+                            { length: numClasses },
+                            (_, i) => `Class ${i + 1}`
+                          );
+                          setLabels(defaultLabels);
+                        }
+
+                        // Update hyperparameters
+                        if (result.hyperparameters) {
+                          setSamplingStrategy(
+                            result.hyperparameters.sampling_strategy ||
+                              "least_confidence"
+                          );
+                          setBatchSize(result.hyperparameters.batch_size || 32);
+                          setEpochs(result.hyperparameters.epochs || 10);
+                          setValSplit(
+                            result.hyperparameters.validation_split || 0.2
+                          );
+                          setInitialLabeledRatio(
+                            result.hyperparameters.initial_labeled_ratio || 0.1
+                          );
+                        }
+
+                        // Update metrics
+                        if (result.project_info) {
+                          setValidationAccuracy(
+                            result.project_info.best_validation_accuracy || 0
+                          );
+                        }
+
+                        // **NEW: Handle automatic image loading**
+                        if (result.images_loaded && result.project_ready) {
+                          setIsProjectFullyInitialized(true);
+                          setSuccessMessage(
+                            `Project imported successfully! Model: ${importedModelType}. 
+       Loaded ${result.dataset_stats.loaded_from_annotations} images automatically. 
+       Getting first batch for active learning...`
+                          );
+
+                          // Auto-start by getting the first batch
+                          setTimeout(async () => {
+                            try {
+                              await getNextBatch();
+                              setSuccessMessage(
+                                `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`
+                              );
+                            } catch (error) {
+                              console.error(
+                                "Error getting first batch:",
+                                error
+                              );
+                              setErrorMessage(
+                                `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`
+                              );
+                            }
+                          }, 1000);
+                        } else if (
+                          result.dataset_stats.loaded_from_annotations > 0
+                        ) {
+                          // Some images loaded but project not ready (maybe all labeled)
+                          setErrorMessage(
+                            `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`
+                          );
+                        } else {
+                          // No images loaded automatically
+                          setErrorMessage(
+                            `${result.message} Images were not found in the expected locations. You can upload new images to continue.`
+                          );
+                        }
+
+                        // Fetch current state
+                        activeLearnAPI
+                          .getStatus()
+                          .then(setStatus)
+                          .catch(console.error);
+                        activeLearnAPI
+                          .getMetrics()
+                          .then(setMetrics)
+                          .catch(console.error);
+                      }}
+                      onError={(errorMsg) => {
+                        setErrorMessage(errorMsg);
+                      }}
+                    />
+
+                    {/* Show full project controls after successful import */}
+                    {isInitialized && (
+                      <Card className="mt-6">
+                        <CardHeader>
+                          <CardTitle>Imported Project Configuration</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="space-y-6">
+                            {/* Project Name - Read Only Display */}
+                            <div>
+                              <Label>Project Name</Label>
+                              <Input
+                                value={projectName}
+                                onChange={(e) => setProjectName(e.target.value)}
+                                className="mt-1"
+                                placeholder="Project name"
+                              />
+                            </div>
+
+                            {/* Model Info - Read Only Display */}
+                            <div>
+                              <Label>Model Type</Label>
+                              <Input
+                                value={selectedModel}
+                                readOnly
+                                className="mt-1 bg-gray-50"
+                              />
+                            </div>
+
+                            {/* Labels Management */}
+                            <div>
+                              <Label>Labels</Label>
+                              <p className="text-sm text-gray-600 mb-2">
+                                You can modify these labels for your dataset
+                              </p>
+                              {labels.map((label, index) => (
+                                <div key={index} className="flex gap-2 mt-2">
+                                  <Input
+                                    value={label}
+                                    onChange={(e) =>
+                                      handleLabelChange(index, e.target.value)
+                                    }
+                                    placeholder={`Label ${index + 1}`}
+                                  />
+                                  {labels.length > 1 && (
+                                    <Button
+                                      variant="outline"
+                                      size="icon"
+                                      onClick={() => handleRemoveLabel(index)}
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                  )}
+                                </div>
+                              ))}
+                              <div className="flex gap-2 mt-2">
+                                <Button
+                                  variant="outline"
+                                  onClick={handleAddLabel}
+                                  className="flex-1"
+                                >
+                                  <Plus className="h-4 w-4 mr-2" />
+                                  Add Label
+                                </Button>
+                              </div>
+                            </div>
+
+                            {/* Hyperparameters */}
+                            <div className="space-y-4">
+                              <h4 className="text-lg font-medium">
+                                Training Parameters
+                              </h4>
+
                               <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2">
                                   <Label>Sampling Strategy</Label>
@@ -1353,7 +2446,7 @@ Possible solutions:
                                 </div>
                               </div>
 
-                              <div className="grid grid-cols-3 gap-4 mt-4">
+                              <div className="grid grid-cols-3 gap-4">
                                 <div className="space-y-2">
                                   <Label>Initial Learning Rate</Label>
                                   <Input
@@ -1378,7 +2471,9 @@ Possible solutions:
                                     type="number"
                                     value={batchSize}
                                     onChange={(e) => {
-                                      const newBatchSize = Number(e.target.value);
+                                      const newBatchSize = Number(
+                                        e.target.value
+                                      );
                                       setBatchSize(newBatchSize);
                                       setBatchStats((prev) => ({
                                         ...prev,
@@ -1403,1290 +2498,418 @@ Possible solutions:
                                       const newEpochs = Number(e.target.value);
                                       setEpochs(newEpochs);
                                     }}
-                                    min={10}
+                                    min={5}
                                     disabled={isRetraining}
                                   />
                                 </div>
                               </div>
-                            </CardContent>
-                          </Card>
 
-                          {/* Data Split Configuration */}
-                          <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                              <Label>Validation Split</Label>
-                              <div className="flex items-center space-x-2">
-                                <Input
-                                  type="range"
-                                  min="0.1"
-                                  max="0.3"
-                                  step="0.05"
-                                  value={valSplit}
-                                  onChange={(e) =>
-                                    setValSplit(parseFloat(e.target.value))
-                                  }
-                                  className="flex-1"
-                                />
-                                <span className="text-sm w-16 text-right">
-                                  {(valSplit * 100).toFixed(0)}%
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label>Initial Labeled Ratio</Label>
-                              <div className="flex items-center space-x-2">
-                                <Input
-                                  type="range"
-                                  min="0.1"
-                                  max="0.8"
-                                  step="0.05"
-                                  value={initialLabeledRatio}
-                                  onChange={(e) =>
-                                    setInitialLabeledRatio(
-                                      parseFloat(e.target.value)
-                                    )
-                                  }
-                                  className="flex-1"
-                                />
-                                <span className="text-sm w-16 text-right">
-                                  {(initialLabeledRatio * 100).toFixed(0)}%
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Data Split Preview */}
-                          {loadedImages.length > 0 && (
-                            <Card className="bg-secondary/50">
-                              <CardContent className="pt-4">
-                                <h4 className="font-medium mb-2">
-                                  Data Split Preview
-                                </h4>
-                                <div className="space-y-1 text-sm">
-                                  <div className="flex justify-between">
-                                    <span>Total Images:</span>
-                                    <span>{loadedImages.length}</span>
-                                  </div>
-                                  <div className="flex justify-between">
-                                    <span>Validation Set:</span>
-                                    <span>
-                                      {Math.round(
-                                        loadedImages.length * valSplit
-                                      )}{" "}
-                                      images
-                                    </span>
-                                  </div>
-                                  <div className="flex justify-between">
-                                    <span>Initial Labeled Set:</span>
-                                    <span>
-                                      {Math.round(
-                                        loadedImages.length *
-                                          (1 - valSplit) *
-                                          initialLabeledRatio
-                                      )}{" "}
-                                      images
-                                    </span>
-                                  </div>
-                                  <div className="flex justify-between">
-                                    <span>Remaining Unlabeled:</span>
-                                    <span>
-                                      {loadedImages.length -
-                                        Math.round(
-                                          loadedImages.length * valSplit
-                                        ) -
-                                        Math.round(
-                                          loadedImages.length *
-                                            (1 - valSplit) *
-                                            initialLabeledRatio
-                                        )}{" "}
-                                      images
+                              {/* Data Split Configuration */}
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <Label>Validation Split</Label>
+                                  <div className="flex items-center space-x-2">
+                                    <Input
+                                      type="range"
+                                      min="0.1"
+                                      max="0.3"
+                                      step="0.05"
+                                      value={valSplit}
+                                      onChange={(e) =>
+                                        setValSplit(parseFloat(e.target.value))
+                                      }
+                                      className="flex-1"
+                                    />
+                                    <span className="text-sm w-16 text-right">
+                                      {(valSplit * 100).toFixed(0)}%
                                     </span>
                                   </div>
                                 </div>
-                              </CardContent>
-                            </Card>
-                          )}
 
-                          <ImageLoader
-                            onImagesLoaded={handleImagesLoaded}
-                            onError={setErrorMessage}
-                          />
-                        </>
-                      ) : (
-                        <>
-                          <PretrainedModelImport
-                            onImportSuccess={(result) => {
-                              console.log("=== IMPORT DEBUG ===");
-                              console.log("Full result:", result);
-
-                              setProjectName(result.project_info.project_name);
-                              const importedModelType =
-                                result.project_info.model_type || "resnet50";
-                              setSelectedModel(importedModelType);
-                              setIsInitialized(true);
-
-                              // Restore labels from imported project
-                              if (result.labels && result.labels.label_names) {
-                                setLabels(result.labels.label_names);
-                                console.log(
-                                  "Restored labels:",
-                                  result.labels.label_names
-                                );
-                              } else {
-                                const numClasses =
-                                  result.project_info.num_classes || 2;
-                                const defaultLabels = Array.from(
-                                  { length: numClasses },
-                                  (_, i) => `Class ${i + 1}`
-                                );
-                                setLabels(defaultLabels);
-                              }
-
-                              // Update hyperparameters
-                              if (result.hyperparameters) {
-                                setSamplingStrategy(
-                                  result.hyperparameters.sampling_strategy ||
-                                    "least_confidence"
-                                );
-                                setBatchSize(
-                                  result.hyperparameters.batch_size || 32
-                                );
-                                setEpochs(result.hyperparameters.epochs || 10);
-                                setValSplit(
-                                  result.hyperparameters.validation_split || 0.2
-                                );
-                                setInitialLabeledRatio(
-                                  result.hyperparameters
-                                    .initial_labeled_ratio || 0.1
-                                );
-                              }
-
-                              // Update metrics
-                              if (result.project_info) {
-                                setValidationAccuracy(
-                                  result.project_info
-                                    .best_validation_accuracy || 0
-                                );
-                              }
-
-                              // **NEW: Handle automatic image loading**
-                              if (
-                                result.images_loaded &&
-                                result.project_ready
-                              ) {
-                                setIsProjectFullyInitialized(true);
-                                setSuccessMessage(
-                                  `Project imported successfully! Model: ${importedModelType}. 
-       Loaded ${result.dataset_stats.loaded_from_annotations} images automatically. 
-       Getting first batch for active learning...`
-                                );
-
-                                // Auto-start by getting the first batch
-                                setTimeout(async () => {
-                                  try {
-                                    await getNextBatch();
-                                    setSuccessMessage(
-                                      `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`
-                                    );
-                                  } catch (error) {
-                                    console.error(
-                                      "Error getting first batch:",
-                                      error
-                                    );
-                                    setErrorMessage(
-                                      `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`
-                                    );
-                                  }
-                                }, 1000);
-                              } else if (
-                                result.dataset_stats.loaded_from_annotations > 0
-                              ) {
-                                // Some images loaded but project not ready (maybe all labeled)
-                                setErrorMessage(
-                                  `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`
-                                );
-                              } else {
-                                // No images loaded automatically
-                                setErrorMessage(
-                                  `${result.message} Images were not found in the expected locations. You can upload new images to continue.`
-                                );
-                              }
-
-                              // Fetch current state
-                              activeLearnAPI
-                                .getStatus()
-                                .then(setStatus)
-                                .catch(console.error);
-                              activeLearnAPI
-                                .getMetrics()
-                                .then(setMetrics)
-                                .catch(console.error);
-                            }}
-                            onError={(errorMsg) => {
-                              setErrorMessage(errorMsg);
-                            }}
-                          />
-
-                          {modelLoaded && (
-                            <>
-                              <ModelAdaptationControls
-                                onAdaptSuccess={(result) => {
-                                  setSuccessMessage(
-                                    `Model adaptation successful using ${result.adaptation_type} strategy`
-                                  );
-                                }}
-                                onError={(errorMsg) => {
-                                  setErrorMessage(
-                                    `Adaptation error: ${errorMsg}`
-                                  );
-                                }}
-                                disabled={!isInitialized || isRetraining}
-                              />
-
-                              {/* Label Management for Pretrained Model */}
-                              <div>
-                                <Label>Labels</Label>
-                                <p className="text-sm text-gray-500 mb-2">Define your labels here</p>
-                                {labels.map((label, index) => (
-                                  <div key={index} className="flex gap-2 mt-2">
+                                <div className="space-y-2">
+                                  <Label>Initial Labeled Ratio</Label>
+                                  <div className="flex items-center space-x-2">
                                     <Input
-                                      value={label}
+                                      type="range"
+                                      min="0.1"
+                                      max="0.8"
+                                      step="0.05"
+                                      value={initialLabeledRatio}
                                       onChange={(e) =>
-                                        handleLabelChange(index, e.target.value)
+                                        setInitialLabeledRatio(
+                                          parseFloat(e.target.value)
+                                        )
                                       }
-                                      placeholder={`Label ${index + 1}`}
+                                      className="flex-1"
                                     />
-                                    {labels.length > 1 && (
-                                      <Button
-                                        variant="outline"
-                                        size="icon"
-                                        onClick={() => handleRemoveLabel(index)}
-                                      >
-                                        <Trash2 className="h-4 w-4" />
-                                      </Button>
-                                    )}
+                                    <span className="text-sm w-16 text-right">
+                                      {(initialLabeledRatio * 100).toFixed(0)}%
+                                    </span>
                                   </div>
-                                ))}
-                                <div className="flex gap-2 mt-2">
-                                  <Button
-                                    variant="outline"
-                                    onClick={handleAddLabel}
-                                    className="flex-1"
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Image Loader */}
+                            <ImageLoader
+                              onImagesLoaded={handleImagesLoaded}
+                              onError={setErrorMessage}
+                            />
+
+                            {message.text &&
+                              (() => {
+                                const alertProps = getAlertProps(message.type);
+                                const IconComponent = alertProps.icon;
+                                return (
+                                  <Alert
+                                    variant={alertProps.variant}
+                                    className={alertProps.className}
                                   >
-                                    <Plus className="h-4 w-4 mr-2" />
-                                    Add Label
-                                  </Button>
-                                </div>
-                              </div>
-
-                              {/* Hyperparameters for Pretrained Model */}
-                              <div className="space-y-4">
-                                <div className="grid grid-cols-2 gap-4">
-                                  <div className="space-y-2">
-                                    <Label>Sampling Strategy</Label>
-                                    <Select
-                                      value={samplingStrategy}
-                                      onValueChange={setSamplingStrategy}
-                                      disabled={batchStats.completed > 0}
-                                    >
-                                      <SelectTrigger>
-                                        <SelectValue placeholder="Select strategy" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value="least_confidence">
-                                          Least Confidence
-                                        </SelectItem>
-                                        <SelectItem value="margin">
-                                          Margin Sampling
-                                        </SelectItem>
-                                        <SelectItem value="entropy">
-                                          Entropy
-                                        </SelectItem>
-                                        <SelectItem value="diversity">
-                                          Diversity-based
-                                        </SelectItem>
-                                      </SelectContent>
-                                    </Select>
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <Label>Learning Rate Strategy</Label>
-                                    <Select
-                                      value={lrConfig.strategy}
-                                      onValueChange={(value) =>
-                                        setLrConfig((prev) => ({
-                                          ...prev,
-                                          strategy: value,
-                                        }))
-                                      }
-                                      disabled={isRetraining}
-                                    >
-                                      <SelectTrigger>
-                                        <SelectValue placeholder="Select LR strategy" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value="plateau">
-                                          Reduce on Plateau
-                                        </SelectItem>
-                                        <SelectItem value="cosine">
-                                          Cosine Annealing
-                                        </SelectItem>
-                                        <SelectItem value="warmup">
-                                          One Cycle with Warmup
-                                        </SelectItem>
-                                        <SelectItem value="step">
-                                          Step Decay
-                                        </SelectItem>
-                                      </SelectContent>
-                                    </Select>
-                                  </div>
-                                </div>
-
-                                <div className="grid grid-cols-3 gap-4">
-                                  <div className="space-y-2">
-                                    <Label>Initial Learning Rate</Label>
-                                    <Input
-                                      type="number"
-                                      value={lrConfig.initial_lr}
-                                      onChange={(e) =>
-                                        setLrConfig((prev) => ({
-                                          ...prev,
-                                          initial_lr: parseFloat(
-                                            e.target.value
-                                          ),
-                                        }))
-                                      }
-                                      min={0.0001}
-                                      max={0.1}
-                                      step={0.0001}
-                                      disabled={isRetraining}
-                                    />
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <Label>Batch Size</Label>
-                                    <Input
-                                      type="number"
-                                      value={batchSize}
-                                      onChange={(e) => {
-                                        const newBatchSize = Number(
-                                          e.target.value
-                                        );
-                                        setBatchSize(newBatchSize);
-                                        setBatchStats((prev) => ({
-                                          ...prev,
-                                          totalImages: newBatchSize,
-                                          remaining: newBatchSize,
-                                        }));
-                                      }}
-                                      min={1}
-                                      max={100}
-                                      disabled={
-                                        isRetraining || batchStats.completed > 0
-                                      }
-                                    />
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <Label>Epochs</Label>
-                                    <Input
-                                      type="number"
-                                      value={epochs}
-                                      onChange={(e) => {
-                                        const newEpochs = Number(
-                                          e.target.value
-                                        );
-                                        setEpochs(newEpochs);
-                                      }}
-                                      min={5}
-                                      disabled={isRetraining}
-                                    />
-                                  </div>
-                                </div>
-
-                                {/* Data Split Configuration for Pretrained */}
-                                <div className="grid grid-cols-2 gap-4">
-                                  <div className="space-y-2">
-                                    <Label>Validation Split</Label>
-                                    <div className="flex items-center space-x-2">
-                                      <Input
-                                        type="range"
-                                        min="0.1"
-                                        max="0.3"
-                                        step="0.05"
-                                        value={valSplit}
-                                        onChange={(e) =>
-                                          setValSplit(
-                                            parseFloat(e.target.value)
-                                          )
-                                        }
-                                        className="flex-1"
-                                      />
-                                      <span className="text-sm w-16 text-right">
-                                        {(valSplit * 100).toFixed(0)}%
-                                      </span>
-                                    </div>
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <Label>Initial Labeled Ratio</Label>
-                                    <div className="flex items-center space-x-2">
-                                      <Input
-                                        type="range"
-                                        min="0.1"
-                                        max="0.8"
-                                        step="0.05"
-                                        value={initialLabeledRatio}
-                                        onChange={(e) =>
-                                          setInitialLabeledRatio(
-                                            parseFloat(e.target.value)
-                                          )
-                                        }
-                                        className="flex-1"
-                                      />
-                                      <span className="text-sm w-16 text-right">
-                                        {(initialLabeledRatio * 100).toFixed(0)}
-                                        %
-                                      </span>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-
-                              <ImageLoader
-                                onImagesLoaded={handleImagesLoaded}
-                                onError={setErrorMessage}
-                              />
-                            </>
-                          )}
-                        </>
-                      )}
-
-                      {message.text && (() => {
-                        const alertProps = getAlertProps(message.type);
-                        const IconComponent = alertProps.icon;
-                        return (
-                          <Alert variant={alertProps.variant} className={alertProps.className}>
-                            <IconComponent className="h-4 w-4" />
-                            <AlertDescription>{message.text}</AlertDescription>
-                          </Alert>
-                        );
-                      })()}
-
-                      <Button
-                        className="w-full"
-                        onClick={handleStartProject}
-                        disabled={
-                          !projectName ||
-                          labels.length === 0 ||
-                          !hasLoadedFiles() ||
-                          isProjectFullyInitialized ||
-                          isLoading
-                        }
-                      >
-                        {isLoading
-                          ? "Initializing Project..."
-                          : isInitialized && !isProjectFullyInitialized
-                          ? "Start Project with Pretrained Model"
-                          : "Start Project"}
-                      </Button>
-                      {isInitialized && (
-                        <AutomatedTrainingControls
-                          onStart={handleStartAutomatedTraining}
-                          onStop={handleStopAutomatedTraining}
-                          status={automatedStatus}
-                          metrics={trainingMetrics}
-                          disabled={!isInitialized}
-                          episode_history={episodeHistory}
-                        />
-                      )}
-
-                      <div>
-                        <ActiveLearningStatus
-                          status={status}
-                          onStartNewBatch={handleStartNewBatch}
-                        />
-                      </div>
-
-                      <CheckpointControls
-                        onSave={handleSaveCheckpoint}
-                        onLoad={handleLoadCheckpoint}
-                        checkpoints={checkpoints}
-                      />
-
-                      <div className="space-y-4">
-                        <div className="flex gap-4">
-                          <Button
-                            onClick={async () => {
-                              try {
-                                // ALWAYS send current labels before export
-                                console.log(
-                                  "Sending labels to backend before export:",
-                                  labels
+                                    <IconComponent className="h-4 w-4" />
+                                    <AlertDescription>
+                                      {message.text}
+                                    </AlertDescription>
+                                  </Alert>
                                 );
+                              })()}
 
-                                if (labels.length > 0) {
-                                  const labelResponse = await fetch(
-                                    `http://localhost:8000/update-project-labels`,
-                                    {
-                                      method: "POST",
-                                      headers: {
-                                        "Content-Type": "application/json",
-                                      },
-                                      body: JSON.stringify({ labels: labels }),
-                                    }
-                                  );
-
-                                  if (!labelResponse.ok) {
-                                    console.warn(
-                                      "Failed to update labels, but continuing with export"
-                                    );
-                                  }
-                                }
-
-                                const response = await fetch(
-                                  `http://localhost:8000/export-project`,
-                                  {
-                                    method: "GET",
-                                  }
-                                );
-
-                                if (!response.ok) {
-                                  throw new Error(
-                                    `Failed to export project: ${response.statusText}`
-                                  );
-                                }
-
-                                const blob = await response.blob();
-                                const url = window.URL.createObjectURL(blob);
-                                const a = document.createElement("a");
-                                a.href = url;
-
-                                const contentDisposition = response.headers.get(
-                                  "content-disposition"
-                                );
-                                let filename = `${projectName}_project_${new Date()
-                                  .toISOString()
-                                  .slice(0, 10)}.zip`;
-
-                                if (contentDisposition) {
-                                  const filenameMatch =
-                                    contentDisposition.match(
-                                      /filename="([^"]+)"/
-                                    );
-                                  if (filenameMatch) {
-                                    filename = filenameMatch[1];
-                                  }
-                                }
-
-                                a.download = filename;
-                                document.body.appendChild(a);
-                                a.click();
-                                window.URL.revokeObjectURL(url);
-                                document.body.removeChild(a);
-
-                                setSuccessMessage(
-                                  "Project exported successfully!"
-                                );
-                              } catch (error) {
-                                setErrorMessage(
-                                  "Failed to export project: " + error.message
-                                );
-                              }
-                            }}
-                            disabled={!isInitialized || !projectName}
-                          >
-                            <Download className="h-4 w-4 mr-2" />
-                            Export Project
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="import">
-                <ProjectImport
-                  onImportSuccess={(result) => {
-                    console.log("=== IMPORT DEBUG ===");
-                    console.log("Full result:", result);
-
-                    setProjectName(result.project_info.project_name);
-                    const importedModelType =
-                      result.project_info.model_type || "resnet50";
-                    setSelectedModel(importedModelType);
-                    setIsInitialized(true);
-
-                    // Restore labels from imported project
-                    if (result.labels && result.labels.label_names) {
-                      setLabels(result.labels.label_names);
-                      console.log(
-                        "Restored labels:",
-                        result.labels.label_names
-                      );
-                    } else {
-                      const numClasses = result.project_info.num_classes || 2;
-                      const defaultLabels = Array.from(
-                        { length: numClasses },
-                        (_, i) => `Class ${i + 1}`
-                      );
-                      setLabels(defaultLabels);
-                    }
-
-                    // Update hyperparameters
-                    if (result.hyperparameters) {
-                      setSamplingStrategy(
-                        result.hyperparameters.sampling_strategy ||
-                          "least_confidence"
-                      );
-                      setBatchSize(result.hyperparameters.batch_size || 32);
-                      setEpochs(result.hyperparameters.epochs || 10);
-                      setValSplit(
-                        result.hyperparameters.validation_split || 0.2
-                      );
-                      setInitialLabeledRatio(
-                        result.hyperparameters.initial_labeled_ratio || 0.1
-                      );
-                    }
-
-                    // Update metrics
-                    if (result.project_info) {
-                      setValidationAccuracy(
-                        result.project_info.best_validation_accuracy || 0
-                      );
-                    }
-
-                    // **NEW: Handle automatic image loading**
-                    if (result.images_loaded && result.project_ready) {
-                      setIsProjectFullyInitialized(true);
-                      setSuccessMessage(
-                        `Project imported successfully! Model: ${importedModelType}. 
-       Loaded ${result.dataset_stats.loaded_from_annotations} images automatically. 
-       Getting first batch for active learning...`
-                      );
-
-                      // Auto-start by getting the first batch
-                      setTimeout(async () => {
-                        try {
-                          await getNextBatch();
-                          setSuccessMessage(
-                            `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`
-                          );
-                        } catch (error) {
-                          console.error("Error getting first batch:", error);
-                          setErrorMessage(
-                            `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`
-                          );
-                        }
-                      }, 1000);
-                    } else if (
-                      result.dataset_stats.loaded_from_annotations > 0
-                    ) {
-                      // Some images loaded but project not ready (maybe all labeled)
-                      setErrorMessage(
-                        `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`
-                      );
-                    } else {
-                      // No images loaded automatically
-                      setErrorMessage(
-                        `${result.message} Images were not found in the expected locations. You can upload new images to continue.`
-                      );
-                    }
-
-                    // Fetch current state
-                    activeLearnAPI
-                      .getStatus()
-                      .then(setStatus)
-                      .catch(console.error);
-                    activeLearnAPI
-                      .getMetrics()
-                      .then(setMetrics)
-                      .catch(console.error);
-                  }}
-                  onError={(errorMsg) => {
-                    setErrorMessage(errorMsg);
-                  }}
-                />
-
-                {/* Show full project controls after successful import */}
-                {isInitialized && (
-                  <Card className="mt-6">
-                    <CardHeader>
-                      <CardTitle>Imported Project Configuration</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-6">
-                        {/* Project Name - Read Only Display */}
-                        <div>
-                          <Label>Project Name</Label>
-                          <Input
-                            value={projectName}
-                            onChange={(e) => setProjectName(e.target.value)}
-                            className="mt-1"
-                            placeholder="Project name"
-                          />
-                        </div>
-
-                        {/* Model Info - Read Only Display */}
-                        <div>
-                          <Label>Model Type</Label>
-                          <Input
-                            value={selectedModel}
-                            readOnly
-                            className="mt-1 bg-gray-50"
-                          />
-                        </div>
-
-                        {/* Labels Management */}
-                        <div>
-                          <Label>Labels</Label>
-                          <p className="text-sm text-gray-600 mb-2">
-                            You can modify these labels for your dataset
-                          </p>
-                          {labels.map((label, index) => (
-                            <div key={index} className="flex gap-2 mt-2">
-                              <Input
-                                value={label}
-                                onChange={(e) =>
-                                  handleLabelChange(index, e.target.value)
-                                }
-                                placeholder={`Label ${index + 1}`}
-                              />
-                              {labels.length > 1 && (
-                                <Button
-                                  variant="outline"
-                                  size="icon"
-                                  onClick={() => handleRemoveLabel(index)}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              )}
-                            </div>
-                          ))}
-                          <div className="flex gap-2 mt-2">
+                            {/* Start Project Button */}
                             <Button
-                              variant="outline"
-                              onClick={handleAddLabel}
-                              className="flex-1"
+                              className="w-full"
+                              onClick={handleStartProject}
+                              disabled={
+                                !projectName ||
+                                labels.length === 0 ||
+                                !hasLoadedFiles() ||
+                                isProjectFullyInitialized ||
+                                isLoading
+                              }
                             >
-                              <Plus className="h-4 w-4 mr-2" />
-                              Add Label
+                              {isLoading
+                                ? "Initializing Project..."
+                                : isProjectFullyInitialized
+                                ? "Project Started"
+                                : "Start Project"}
+                            </Button>
+
+                            {/* Training Controls */}
+                            {isProjectFullyInitialized && (
+                              <>
+                                <AutomatedTrainingControls
+                                  onStart={handleStartAutomatedTraining}
+                                  onStop={handleStopAutomatedTraining}
+                                  status={automatedStatus}
+                                  metrics={trainingMetrics}
+                                  disabled={!isInitialized}
+                                  episode_history={episodeHistory}
+                                />
+
+                                <div>
+                                  <ActiveLearningStatus
+                                    status={status}
+                                    onStartNewBatch={handleStartNewBatch}
+                                  />
+                                </div>
+
+                                <CheckpointControls
+                                  onSave={handleSaveCheckpoint}
+                                  onLoad={handleLoadCheckpoint}
+                                  checkpoints={checkpoints}
+                                />
+
+                                <div className="space-y-4">
+                                  <div className="flex gap-4">
+                                    <Button
+                                      onClick={async () => {
+                                        try {
+                                          // ALWAYS send current labels before export
+                                          console.log(
+                                            "Sending labels to backend before export:",
+                                            labels
+                                          );
+
+                                          if (labels.length > 0) {
+                                            const labelResponse = await fetch(
+                                              `http://localhost:8000/update-project-labels`,
+                                              {
+                                                method: "POST",
+                                                headers: {
+                                                  "Content-Type":
+                                                    "application/json",
+                                                },
+                                                body: JSON.stringify({
+                                                  labels: labels,
+                                                }),
+                                              }
+                                            );
+
+                                            if (!labelResponse.ok) {
+                                              console.warn(
+                                                "Failed to update labels, but continuing with export"
+                                              );
+                                            }
+                                          }
+
+                                          const response = await fetch(
+                                            `http://localhost:8000/export-project`,
+                                            {
+                                              method: "GET",
+                                            }
+                                          );
+
+                                          if (!response.ok) {
+                                            throw new Error(
+                                              `Failed to export project: ${response.statusText}`
+                                            );
+                                          }
+
+                                          const blob = await response.blob();
+                                          const url =
+                                            window.URL.createObjectURL(blob);
+                                          const a = document.createElement("a");
+                                          a.href = url;
+
+                                          const contentDisposition =
+                                            response.headers.get(
+                                              "content-disposition"
+                                            );
+                                          let filename = `${projectName}_project_${new Date()
+                                            .toISOString()
+                                            .slice(0, 10)}.zip`;
+
+                                          if (contentDisposition) {
+                                            const filenameMatch =
+                                              contentDisposition.match(
+                                                /filename="([^"]+)"/
+                                              );
+                                            if (filenameMatch) {
+                                              filename = filenameMatch[1];
+                                            }
+                                          }
+
+                                          a.download = filename;
+                                          document.body.appendChild(a);
+                                          a.click();
+                                          window.URL.revokeObjectURL(url);
+                                          document.body.removeChild(a);
+
+                                          setSuccessMessage(
+                                            "Project exported successfully!"
+                                          );
+                                        } catch (error) {
+                                          setErrorMessage(
+                                            "Failed to export project: " +
+                                              error.message
+                                          );
+                                        }
+                                      }}
+                                      disabled={!isInitialized || !projectName}
+                                    >
+                                      <Download className="h-4 w-4 mr-2" />
+                                      Export Project
+                                    </Button>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )}
+                  </TabsContent>
+                </Tabs>
+              </div>
+
+              {/* Right Column - Image Annotation */}
+              <div>
+                <Card className="sticky top-6">
+                  <CardHeader>
+                    <CardTitle>Image Annotation</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      {/* Image Display with Navigation */}
+                      <div className="bg-gray-100 rounded-lg overflow-hidden">
+                        <img
+                          src={currentImage}
+                          alt="Current image for annotation"
+                          className="w-full object-contain max-h-96"
+                        />
+                        {loadedImages.length > 0 && (
+                          <div className="p-4 bg-white border-t flex justify-between items-center">
+                            <Button
+                              onClick={handlePreviousImage}
+                              disabled={currentImageIndex === 0}
+                              variant="outline"
+                            >
+                              Previous
+                            </Button>
+                            <span className="text-sm text-gray-600">
+                              Image {currentImageIndex + 1} of {batchSize}
+                            </span>
+                            <Button
+                              onClick={handleNextImage}
+                              disabled={
+                                currentImageIndex === loadedImages.length - 1
+                              }
+                              variant="outline"
+                            >
+                              Next
                             </Button>
                           </div>
-                        </div>
-
-                        {/* Hyperparameters */}
-                        <div className="space-y-4">
-                          <h4 className="text-lg font-medium">
-                            Training Parameters
-                          </h4>
-
-                          <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                              <Label>Sampling Strategy</Label>
-                              <Select
-                                value={samplingStrategy}
-                                onValueChange={setSamplingStrategy}
-                                disabled={batchStats.completed > 0}
-                              >
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Select strategy" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="least_confidence">
-                                    Least Confidence
-                                  </SelectItem>
-                                  <SelectItem value="margin">
-                                    Margin Sampling
-                                  </SelectItem>
-                                  <SelectItem value="entropy">
-                                    Entropy
-                                  </SelectItem>
-                                  <SelectItem value="diversity">
-                                    Diversity-based
-                                  </SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label>Learning Rate Strategy</Label>
-                              <Select
-                                value={lrConfig.strategy}
-                                onValueChange={(value) =>
-                                  setLrConfig((prev) => ({
-                                    ...prev,
-                                    strategy: value,
-                                  }))
-                                }
-                                disabled={isRetraining}
-                              >
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Select LR strategy" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="plateau">
-                                    Reduce on Plateau
-                                  </SelectItem>
-                                  <SelectItem value="cosine">
-                                    Cosine Annealing
-                                  </SelectItem>
-                                  <SelectItem value="warmup">
-                                    One Cycle with Warmup
-                                  </SelectItem>
-                                  <SelectItem value="step">
-                                    Step Decay
-                                  </SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-3 gap-4">
-                            <div className="space-y-2">
-                              <Label>Initial Learning Rate</Label>
-                              <Input
-                                type="number"
-                                value={lrConfig.initial_lr}
-                                onChange={(e) =>
-                                  setLrConfig((prev) => ({
-                                    ...prev,
-                                    initial_lr: parseFloat(e.target.value),
-                                  }))
-                                }
-                                min={0.0001}
-                                max={0.1}
-                                step={0.0001}
-                                disabled={isRetraining}
-                              />
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label>Batch Size</Label>
-                              <Input
-                                type="number"
-                                value={batchSize}
-                                onChange={(e) => {
-                                  const newBatchSize = Number(e.target.value);
-                                  setBatchSize(newBatchSize);
-                                  setBatchStats((prev) => ({
-                                    ...prev,
-                                    totalImages: newBatchSize,
-                                    remaining: newBatchSize,
-                                  }));
-                                }}
-                                min={1}
-                                max={100}
-                                disabled={
-                                  isRetraining || batchStats.completed > 0
-                                }
-                              />
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label>Epochs</Label>
-                              <Input
-                                type="number"
-                                value={epochs}
-                                onChange={(e) => {
-                                  const newEpochs = Number(e.target.value);
-                                  setEpochs(newEpochs);
-                                }}
-                                min={5}
-                                disabled={isRetraining}
-                              />
-                            </div>
-                          </div>
-
-                          {/* Data Split Configuration */}
-                          <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                              <Label>Validation Split</Label>
-                              <div className="flex items-center space-x-2">
-                                <Input
-                                  type="range"
-                                  min="0.1"
-                                  max="0.3"
-                                  step="0.05"
-                                  value={valSplit}
-                                  onChange={(e) =>
-                                    setValSplit(parseFloat(e.target.value))
-                                  }
-                                  className="flex-1"
-                                />
-                                <span className="text-sm w-16 text-right">
-                                  {(valSplit * 100).toFixed(0)}%
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label>Initial Labeled Ratio</Label>
-                              <div className="flex items-center space-x-2">
-                                <Input
-                                  type="range"
-                                  min="0.1"
-                                  max="0.8"
-                                  step="0.05"
-                                  value={initialLabeledRatio}
-                                  onChange={(e) =>
-                                    setInitialLabeledRatio(
-                                      parseFloat(e.target.value)
-                                    )
-                                  }
-                                  className="flex-1"
-                                />
-                                <span className="text-sm w-16 text-right">
-                                  {(initialLabeledRatio * 100).toFixed(0)}%
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Image Loader */}
-                        <ImageLoader
-                          onImagesLoaded={handleImagesLoaded}
-                          onError={setErrorMessage}
-                        />
-
-                        {message.text && (() => {
+                        )}
+                      </div>
+                      {message.text &&
+                        (() => {
                           const alertProps = getAlertProps(message.type);
                           const IconComponent = alertProps.icon;
                           return (
-                            <Alert variant={alertProps.variant} className={alertProps.className}>
+                            <Alert
+                              variant={alertProps.variant}
+                              className={alertProps.className}
+                            >
                               <IconComponent className="h-4 w-4" />
-                              <AlertDescription>{message.text}</AlertDescription>
+                              <AlertDescription>
+                                {message.text}
+                              </AlertDescription>
                             </Alert>
                           );
                         })()}
-
-                        {/* Start Project Button */}
+                      {/* Label Selection */}
+                      <div className="space-y-2">
+                        <Label>Assign Label</Label>
+                        <RadioGroup
+                          value={selectedLabel}
+                          onValueChange={setSelectedLabel}
+                          className="space-y-2"
+                        >
+                          {labels.map((label, index) => (
+                            <div
+                              key={index}
+                              className="flex items-center space-x-2"
+                            >
+                              <RadioGroupItem
+                                value={index.toString()}
+                                id={`label-${index}`}
+                              />
+                              <Label htmlFor={`label-${index}`}>{label}</Label>
+                            </div>
+                          ))}
+                        </RadioGroup>
+                      </div>
+                      {/* Action Buttons */}
+                      <div className="flex justify-between pt-4">
                         <Button
                           className="w-full"
-                          onClick={handleStartProject}
-                          disabled={
-                            !projectName ||
-                            labels.length === 0 ||
-                            !hasLoadedFiles() ||
-                            isProjectFullyInitialized ||
-                            isLoading
-                          }
+                          onClick={handleSubmitLabel}
+                          disabled={!selectedLabel}
                         >
-                          {isLoading
-                            ? "Initializing Project..."
-                            : isProjectFullyInitialized
-                            ? "Project Started"
-                            : "Start Project"}
+                          Submit Label
                         </Button>
+                      </div>
 
-                        {/* Training Controls */}
-                        {isProjectFullyInitialized && (
-                          <>
-                            <AutomatedTrainingControls
-                              onStart={handleStartAutomatedTraining}
-                              onStop={handleStopAutomatedTraining}
-                              status={automatedStatus}
-                              metrics={trainingMetrics}
-                              disabled={!isInitialized}
-                              episode_history={episodeHistory}
-                            />
+                      <BatchProgress
+                        currentBatch={currentBatch}
+                        batchStats={batchStats}
+                        onSubmitLabel={handleSubmitLabel}
+                        selectedLabel={selectedLabel}
+                        isRetraining={isRetraining}
+                        validationAccuracy={validationAccuracy}
+                      />
 
-                            <div>
-                              <ActiveLearningStatus
-                                status={status}
-                                onStartNewBatch={handleStartNewBatch}
-                              />
-                            </div>
+                      {currentBatch.length > 0 &&
+                        currentImageIndex < currentBatch.length &&
+                        (() => {
+                          const rawPredictions =
+                            currentBatch[currentImageIndex]?.predictions || [];
+                          const filteredPredictions = getFilteredPredictions(
+                            rawPredictions,
+                            labels
+                          );
 
-                            <CheckpointControls
-                              onSave={handleSaveCheckpoint}
-                              onLoad={handleLoadCheckpoint}
-                              checkpoints={checkpoints}
-                            />
+                          console.log(
+                            "=== CREATING NEW COMPONENT INSTANCE ==="
+                          );
+                          console.log(
+                            "Predictions to render:",
+                            filteredPredictions
+                          );
 
-                            <div className="space-y-4">
-                              <div className="flex gap-4">
-                                <Button
-                                  onClick={async () => {
-                                    try {
-                                      // ALWAYS send current labels before export
-                                      console.log(
-                                        "Sending labels to backend before export:",
-                                        labels
-                                      );
+                          // Render inline to avoid any component caching issues
+                          return (
+                            <div
+                              key={`predictions-${currentImageIndex}-${Date.now()}`}
+                            >
+                              <h4 className="font-medium mb-2">
+                                Model Predictions
+                              </h4>
+                              <div className="text-xs text-gray-400 mb-2">
+                                Image {currentImageIndex + 1} - Showing{" "}
+                                {filteredPredictions.length} predictions
+                              </div>
+                              <div className="space-y-2">
+                                {filteredPredictions.map((pred, idx) => {
+                                  const confidence = Math.round(
+                                    pred.confidence * 100
+                                  );
+                                  console.log(
+                                    `RENDERING: ${pred.label} with ${confidence}% (raw: ${pred.confidence})`
+                                  );
 
-                                      if (labels.length > 0) {
-                                        const labelResponse = await fetch(
-                                          `http://localhost:8000/update-project-labels`,
-                                          {
-                                            method: "POST",
-                                            headers: {
-                                              "Content-Type":
-                                                "application/json",
-                                            },
-                                            body: JSON.stringify({
-                                              labels: labels,
-                                            }),
-                                          }
-                                        );
-
-                                        if (!labelResponse.ok) {
-                                          console.warn(
-                                            "Failed to update labels, but continuing with export"
-                                          );
-                                        }
-                                      }
-
-                                      const response = await fetch(
-                                        `http://localhost:8000/export-project`,
-                                        {
-                                          method: "GET",
-                                        }
-                                      );
-
-                                      if (!response.ok) {
-                                        throw new Error(
-                                          `Failed to export project: ${response.statusText}`
-                                        );
-                                      }
-
-                                      const blob = await response.blob();
-                                      const url =
-                                        window.URL.createObjectURL(blob);
-                                      const a = document.createElement("a");
-                                      a.href = url;
-
-                                      const contentDisposition =
-                                        response.headers.get(
-                                          "content-disposition"
-                                        );
-                                      let filename = `${projectName}_project_${new Date()
-                                        .toISOString()
-                                        .slice(0, 10)}.zip`;
-
-                                      if (contentDisposition) {
-                                        const filenameMatch =
-                                          contentDisposition.match(
-                                            /filename="([^"]+)"/
-                                          );
-                                        if (filenameMatch) {
-                                          filename = filenameMatch[1];
-                                        }
-                                      }
-
-                                      a.download = filename;
-                                      document.body.appendChild(a);
-                                      a.click();
-                                      window.URL.revokeObjectURL(url);
-                                      document.body.removeChild(a);
-
-                                      setSuccessMessage(
-                                        "Project exported successfully!"
-                                      );
-                                    } catch (error) {
-                                      setErrorMessage(
-                                        "Failed to export project: " +
-                                          error.message
-                                      );
-                                    }
-                                  }}
-                                  disabled={!isInitialized || !projectName}
-                                >
-                                  <Download className="h-4 w-4 mr-2" />
-                                  Export Project
-                                </Button>
+                                  return (
+                                    <div
+                                      key={`${pred.label}-${pred.confidence}-${idx}`}
+                                      className="flex items-center gap-2"
+                                    >
+                                      <div className="w-full bg-gray-200 rounded-full h-2.5">
+                                        <div
+                                          className="bg-blue-600 h-2.5 rounded-full"
+                                          style={{
+                                            width: `${Math.max(
+                                              confidence,
+                                              1
+                                            )}%`,
+                                          }}
+                                        ></div>
+                                      </div>
+                                      <span className="text-sm whitespace-nowrap">
+                                        {pred.label}:{" "}
+                                        {(pred.confidence * 100).toFixed(2)}%
+                                      </span>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
-                          </>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-              </TabsContent>
-            </Tabs>
-          </div>
+                          );
+                        })()}
 
-          {/* Right Column - Image Annotation */}
-          <div>
-            <Card className="sticky top-6">
-              <CardHeader>
-                <CardTitle>Image Annotation</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {/* Image Display with Navigation */}
-                  <div className="bg-gray-100 rounded-lg overflow-hidden">
-                    <img
-                      src={currentImage}
-                      alt="Current image for annotation"
-                      className="w-full object-contain max-h-96"
-                    />
-                    {loadedImages.length > 0 && (
-                      <div className="p-4 bg-white border-t flex justify-between items-center">
-                        <Button
-                          onClick={handlePreviousImage}
-                          disabled={currentImageIndex === 0}
-                          variant="outline"
-                        >
-                          Previous
-                        </Button>
-                        <span className="text-sm text-gray-600">
-                          Image {currentImageIndex + 1} of {batchSize}
-                        </span>
-                        <Button
-                          onClick={handleNextImage}
-                          disabled={
-                            currentImageIndex === loadedImages.length - 1
-                          }
-                          variant="outline"
-                        >
-                          Next
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                  {message.text && (() => {
-                    const alertProps = getAlertProps(message.type);
-                    const IconComponent = alertProps.icon;
-                    return (
-                      <Alert variant={alertProps.variant} className={alertProps.className}>
-                        <IconComponent className="h-4 w-4" />
-                        <AlertDescription>{message.text}</AlertDescription>
-                      </Alert>
-                    );
-                  })()}
-                  {/* Label Selection */}
-                  <div className="space-y-2">
-                    <Label>Assign Label</Label>
-                    <RadioGroup
-                      value={selectedLabel}
-                      onValueChange={setSelectedLabel}
-                      className="space-y-2"
-                    >
-                      {labels.map((label, index) => (
-                        <div
-                          key={index}
-                          className="flex items-center space-x-2"
-                        >
-                          <RadioGroupItem
-                            value={index.toString()}
-                            id={`label-${index}`}
-                          />
-                          <Label htmlFor={`label-${index}`}>{label}</Label>
+                      {isRetraining && (
+                        <div className="mt-4">
+                          <Card className="bg-blue-50 border-blue-200">
+                            <CardContent className="p-4">
+                              <div className="flex items-center space-x-2">
+                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                                <p className="text-blue-700">
+                                  Training in progress... Please wait
+                                </p>
+                              </div>
+                              <p className="text-sm text-blue-600 mt-2">
+                                This may take several minutes depending on the
+                                dataset size
+                              </p>
+                            </CardContent>
+                          </Card>
                         </div>
-                      ))}
-                    </RadioGroup>
-                  </div>
-                  {/* Action Buttons */}
-                  <div className="flex justify-between pt-4">
-                    <Button
-                      className="w-full"
-                      onClick={handleSubmitLabel}
-                      disabled={!selectedLabel}
-                    >
-                      Submit Label
-                    </Button>
-                  </div>
-
-                  <BatchProgress
-                    currentBatch={currentBatch}
-                    batchStats={batchStats}
-                    onSubmitLabel={handleSubmitLabel}
-                    selectedLabel={selectedLabel}
-                    isRetraining={isRetraining}
-                    validationAccuracy={validationAccuracy}
-                  />
-
-                  {currentBatch.length > 0 &&
-                    currentImageIndex < currentBatch.length &&
-                    (() => {
-                      const rawPredictions =
-                        currentBatch[currentImageIndex]?.predictions || [];
-                      const filteredPredictions = getFilteredPredictions(
-                        rawPredictions,
-                        labels
-                      );
-
-                      console.log("=== CREATING NEW COMPONENT INSTANCE ===");
-                      console.log(
-                        "Predictions to render:",
-                        filteredPredictions
-                      );
-
-                      // Render inline to avoid any component caching issues
-                      return (
-                        <div
-                          key={`predictions-${currentImageIndex}-${Date.now()}`}
-                        >
-                          <h4 className="font-medium mb-2">
-                            Model Predictions
-                          </h4>
-                          <div className="text-xs text-gray-400 mb-2">
-                            Image {currentImageIndex + 1} - Showing{" "}
-                            {filteredPredictions.length} predictions
-                          </div>
-                          <div className="space-y-2">
-                            {filteredPredictions.map((pred, idx) => {
-                              const confidence = Math.round(
-                                pred.confidence * 100
-                              );
-                              console.log(
-                                `RENDERING: ${pred.label} with ${confidence}% (raw: ${pred.confidence})`
-                              );
-
-                              return (
-                                <div
-                                  key={`${pred.label}-${pred.confidence}-${idx}`}
-                                  className="flex items-center gap-2"
-                                >
-                                  <div className="w-full bg-gray-200 rounded-full h-2.5">
-                                    <div
-                                      className="bg-blue-600 h-2.5 rounded-full"
-                                      style={{
-                                        width: `${Math.max(confidence, 1)}%`,
-                                      }}
-                                    ></div>
-                                  </div>
-                                  <span className="text-sm whitespace-nowrap">
-                                    {pred.label}:{" "}
-                                    {(pred.confidence * 100).toFixed(2)}%
-                                  </span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                  {isRetraining && (
-                    <div className="mt-4">
-                      <Card className="bg-blue-50 border-blue-200">
-                        <CardContent className="p-4">
-                          <div className="flex items-center space-x-2">
-                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
-                            <p className="text-blue-700">
-                              Training in progress... Please wait
-                            </p>
-                          </div>
-                          <p className="text-sm text-blue-600 mt-2">
-                            This may take several minutes depending on the
-                            dataset size
-                          </p>
-                        </CardContent>
-                      </Card>
+                      )}
                     </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        </>
+      )}
     </>
   );
 };
