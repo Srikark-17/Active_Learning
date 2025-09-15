@@ -2919,9 +2919,10 @@ async def export_project():
                'project_info': {
                     'project_name': al_manager.project_name,
                     'export_timestamp': datetime.now().isoformat(),
-                    'current_episode': al_manager.episode,
+                    # Export the last COMPLETED episode, not the next episode to run
+                    'current_episode': max(0, al_manager.episode - 1),  # Subtract 1 because episode is "next to run"
                     'best_validation_accuracy': al_manager.best_val_acc,
-                    'model_type': model_type_name,  # Use determined type
+                    'model_type': model_type_name,
                     'model_class': al_manager.model.__class__.__name__,
                     'is_vision_transformer': model_type_name == 'vision-transformer',
                     'num_classes': num_classes,
@@ -4798,7 +4799,11 @@ async def import_project(uploaded_file: UploadFile = File(...)):
             
             # Initialize project with imported settings
             al_manager.project_name = project_info['project_name']
-            al_manager.episode = project_info['current_episode']
+            imported_episode = project_info['current_episode']
+            al_manager.episode = imported_episode + 1
+
+            print(f"Imported project completed episode {imported_episode}, ready for episode {al_manager.episode}")
+
             al_manager.best_val_acc = project_info['best_validation_accuracy']
             
             # Update config

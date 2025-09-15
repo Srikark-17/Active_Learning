@@ -36,11 +36,29 @@ const EnhancedMetricsDisplay = ({ metrics, episode_history, lr_history }) => {
     [];
 
   // Get current episode and best accuracy from multiple possible sources
-  const currentEpisode =
-    metrics?.current_episode ||
-    episode_history?.length ||
-    Math.max(...(accuracyData.map((d) => d.episode) || [0])) ||
-    0;
+  const currentEpisode = (() => {
+    // First try to get from metrics (most reliable)
+    if (metrics?.current_episode !== undefined) {
+      return metrics.current_episode;
+    }
+
+    // If we have episode history, the current episode is the next one to run
+    if (episode_history?.length > 0) {
+      const lastCompletedEpisode = Math.max(
+        ...episode_history.map((ep) => ep.episode || 0)
+      );
+      return lastCompletedEpisode + 1;
+    }
+
+    // If we have accuracy data, get the next episode
+    if (accuracyData?.length > 0) {
+      const lastEpisode = Math.max(...accuracyData.map((d) => d.episode));
+      return lastEpisode + 1;
+    }
+
+    // Default to episode 1 (first episode to run)
+    return 1;
+  })();
 
   const bestValidationAccuracy = (() => {
     // First check if we have explicit best_val_acc from metrics
