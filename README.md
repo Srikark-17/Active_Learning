@@ -65,9 +65,9 @@ For a development environment, run
 
 ## 📹 Tutorials
 
-[How to use the interface to train new projects](https://drive.google.com/file/d/1dtDrBBQPRXZywTzsXU5EPlulsMVBYJJn/view?usp=sharing)
+[How to use the interface to train new projects](https://drive.google.com/file/d/1uHd7gqWH5-R301WBtCbAcrO2hrMO33mg/view?usp=sharing)
 <br/>
-[How to use the interface to train on existing projects](https://drive.google.com/file/d/1CfGAvPtxM6MzqhX-xlBhI25CrwCqPEmu/view?usp=sharing)
+[How to use the interface to train on existing projects](https://drive.google.com/file/d/1k-YzEN-DyxmhfQwMbbDJavw4e6t5fYp3/view?usp=sharing)
 
 ## Questions
 
