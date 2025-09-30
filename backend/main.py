@@ -170,6 +170,7 @@ class ActiveLearningManager:
         self.validation_data = {}  # {image_id: (image_tensor, label)}
         self.current_batch = []
         self.episode = 0
+        self.annotation_tracking = {}
         self.project_name = None
         self.image_paths = {}
         self.output_dir = None
@@ -228,6 +229,15 @@ class ActiveLearningManager:
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
+
+    def add_machine_annotation(self, image_id: int, predicted_label: int, confidence: float):
+        """Track machine-generated annotation"""
+        self.annotation_tracking[image_id] = {
+            'label': predicted_label,
+            'source': 'machine',
+            'confidence': confidence,
+            'episode': self.episode
+        }
 
     def initialize_project(self, project_name: str, model_name: str, num_classes: int, config: dict = None):
         try:
@@ -833,6 +843,7 @@ class ActiveLearningManager:
                     print(f"Fallback strategy also failed: {str(fallback_e)}")
                     traceback.print_exc()
                     raise
+            
             else:
                 # If we're already using random sampling and it failed, re-raise
                 raise
@@ -891,6 +902,105 @@ class ActiveLearningManager:
             }
             for img_id, score, preds in selected
         ]
+    
+    def _save_episode_annotations_csv(self):
+        """Save annotations for current episode to CSV"""
+        if not self.output_dir:
+            return
+        
+        # Create episode CSVs directory
+        csv_dir = os.path.join(self.output_dir, 'episode_csvs')
+        os.makedirs(csv_dir, exist_ok=True)
+        
+        # Collect annotations for this episode
+        episode_annotations = []
+        
+        for img_id, tracking_info in self.annotation_tracking.items():
+            if tracking_info.get('episode') == self.episode:
+                # Get image path
+                image_path = self.image_paths.get(img_id, f"image_{img_id}")
+                
+                # Get label info
+                label_idx = tracking_info['label']
+                label_name = None
+                if hasattr(self, 'current_labels') and self.current_labels:
+                    if label_idx < len(self.current_labels):
+                        label_name = self.current_labels[label_idx]
+                
+                # Create annotation record
+                annotation = {
+                    'image_id': img_id,
+                    'image_path': image_path,
+                    'label_index': label_idx,
+                    'label_name': label_name if label_name else f"Class {label_idx}",
+                    'annotation_source': tracking_info['source'],  # 'human' or 'machine'
+                    'confidence': tracking_info.get('confidence', 1.0) if tracking_info['source'] == 'machine' else None,
+                    'episode': self.episode
+                }
+                
+                episode_annotations.append(annotation)
+        
+        # Save to CSV if we have annotations
+        if episode_annotations:
+            csv_path = os.path.join(csv_dir, f'episode_{self.episode:03d}_annotations.csv')
+            df = pd.DataFrame(episode_annotations)
+            df.to_csv(csv_path, index=False)
+            print(f"Saved {len(episode_annotations)} annotations to {csv_path}")
+
+    def _save_episode_annotations_csv(self):
+        """Save annotations for current episode to CSV with machine predictions"""
+        if not self.output_dir:
+            return
+        
+        csv_dir = os.path.join(self.output_dir, 'episode_csvs')
+        os.makedirs(csv_dir, exist_ok=True)
+        
+        episode_annotations = []
+        
+        for img_id, tracking_info in self.annotation_tracking.items():
+            if tracking_info.get('episode') == self.episode:
+                image_path = self.image_paths.get(img_id, f"image_{img_id}")
+                
+                label_idx = tracking_info['label']
+                label_name = None
+                if hasattr(self, 'current_labels') and self.current_labels:
+                    if label_idx < len(self.current_labels):
+                        label_name = self.current_labels[label_idx]
+                
+                machine_pred = tracking_info.get('machine_prediction')
+                machine_pred_name = None
+                if machine_pred is not None and hasattr(self, 'current_labels') and self.current_labels:
+                    if machine_pred < len(self.current_labels):
+                        machine_pred_name = self.current_labels[machine_pred]
+                
+                agreement = (machine_pred == label_idx) if machine_pred is not None else None
+                
+                annotation = {
+                    'image_id': img_id,
+                    'image_path': image_path,
+                    'human_label_index': label_idx,
+                    'human_label_name': label_name if label_name else f"Class {label_idx}",
+                    'machine_prediction_index': machine_pred,
+                    'machine_prediction_name': machine_pred_name if machine_pred_name else (f"Class {machine_pred}" if machine_pred is not None else "N/A"),
+                    'machine_confidence': tracking_info.get('machine_confidence'),
+                    'human_machine_agreement': agreement,
+                    'annotation_source': tracking_info['source'],
+                    'episode': self.episode
+                }
+                
+                episode_annotations.append(annotation)
+        
+        if episode_annotations:
+            csv_path = os.path.join(csv_dir, f'episode_{self.episode:03d}_annotations.csv')
+            df = pd.DataFrame(episode_annotations)
+            df.to_csv(csv_path, index=False)
+            print(f"Saved {len(episode_annotations)} annotations to {csv_path}")
+            
+            if len(episode_annotations) > 0:
+                agreements = [a['human_machine_agreement'] for a in episode_annotations if a['human_machine_agreement'] is not None]
+                if agreements:
+                    accuracy = sum(agreements) / len(agreements) * 100
+                    print(f"Episode {self.episode} machine accuracy: {accuracy:.2f}% ({sum(agreements)}/{len(agreements)} correct)")
 
     def _select_diverse_samples(self, sample_scores: List[Tuple[int, float, List[dict]]], 
                           batch_size: int) -> List[Tuple[int, float, List[dict]]]:
@@ -1134,14 +1244,38 @@ class ActiveLearningManager:
         plt.close()
 
     def submit_label(self, image_id: int, label: int):
-        """Submit label for an image"""
-        # Check where the image belongs
+        """Submit label for an image and track annotation source"""
+        machine_prediction = None
+        machine_confidence = None
+        
+        if image_id in self.unlabeled_data:
+            try:
+                self.model.eval()
+                with torch.no_grad():
+                    img_tensor = self.unlabeled_data[image_id].unsqueeze(0).to(self.device)
+                    outputs = self.model(img_tensor)
+                    probs = torch.softmax(outputs, dim=1)
+                    top_prob, top_class = torch.max(probs, dim=1)
+                    machine_prediction = int(top_class.item())
+                    machine_confidence = float(top_prob.item())
+            except Exception as e:
+                print(f"Could not get machine prediction: {e}")
+        
         if image_id in self.validation_data:
             img_tensor = self.validation_data[image_id][0]
             self.validation_data[image_id] = (img_tensor, label)
         elif image_id in self.unlabeled_data:
             img_tensor = self.unlabeled_data.pop(image_id)
             self.labeled_data[image_id] = (img_tensor, label)
+            
+            self.annotation_tracking[image_id] = {
+                'label': label,
+                'source': 'human',
+                'confidence': 1.0,
+                'episode': self.episode,
+                'machine_prediction': machine_prediction,
+                'machine_confidence': machine_confidence
+            }
         else:
             raise HTTPException(status_code=400, detail="Image not found")
         
@@ -1364,7 +1498,11 @@ class ActiveLearningManager:
                     except Exception as checkpoint_error:
                         print(f"Warning: Failed to save episode checkpoint: {str(checkpoint_error)}")
 
-                # Increment episode counter
+                try:
+                    self._save_episode_annotations_csv()
+                except Exception as csv_error:
+                    print(f"Warning: Failed to save episode CSV: {str(csv_error)}")
+
                 self.episode += 1
                 
                 # Return result with evaluation data if available
@@ -2811,13 +2949,11 @@ async def export_project():
         
         print("Starting project export...")
         
-        # INSPECT THE MODEL AND SAVE INFO
         model_info = inspect_and_save_model_info(al_manager.model, "current_model_inspection.json")
         print("=== MODEL INSPECTION COMPLETE ===")
         print(f"Class name: {model_info.get('basic_info', {}).get('class_name', 'unknown')}")
         print(f"Detected type: {model_info.get('detection_result', {}).get('detected_type', 'unknown')}")
         
-        # Create ZIP file in memory
         zip_buffer = io.BytesIO()
         
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -2828,7 +2964,6 @@ async def export_project():
                 zipf.writestr("model_inspection.json", f.read())
             
             # 1. Export model
-            # Use the inspection results for better type detection
             model_type_name = model_info.get('detection_result', {}).get('detected_type', 'custom')
             if model_type_name == 'resnet':
                 model_type_name = model_info.get('detection_result', {}).get('variant', 'resnet50')
@@ -2853,19 +2988,16 @@ async def export_project():
                 }
             }
         
-            # Save model to temporary bytes buffer
             model_buffer = io.BytesIO()
             torch.save(model_export, model_buffer)
             model_buffer.seek(0)
             zipf.writestr("model.pt", model_buffer.getvalue())
             print("Added model to ZIP...")
-            
+
             # 2. Create annotated CSV with ALL images and their REAL paths
             csv_data = []
             
-            # Helper function to get real image path
             def get_image_info(img_id, img_tensor, label, split_type):
-                # Get the actual stored path or create a fallback
                 original_path = al_manager.image_paths.get(img_id, f"image_{img_id}.jpg")
                 
                 return {
@@ -2873,29 +3005,24 @@ async def export_project():
                     'image_path': original_path,
                     'status': 'labeled' if label is not None else 'unlabeled',
                     'label_index': label,
-                    'label_name': None,  # Will be filled below if needed
+                    'label_name': None,
                     'split': split_type
                 }
             
-            # Add labeled images
             for img_id, (img_tensor, label) in al_manager.labeled_data.items():
                 csv_data.append(get_image_info(img_id, img_tensor, label, 'train'))
             
-            # Add unlabeled images
             for img_id, img_tensor in al_manager.unlabeled_data.items():
                 csv_data.append(get_image_info(img_id, img_tensor, None, 'train'))
             
-            # Add validation images
             for img_id, (img_tensor, label) in al_manager.validation_data.items():
                 csv_data.append(get_image_info(img_id, img_tensor, label, 'validation'))
             
-            # Fill in label names if we have current labels
             if hasattr(al_manager, 'current_labels') and al_manager.current_labels:
                 for item in csv_data:
                     if item['label_index'] is not None and item['label_index'] < len(al_manager.current_labels):
                         item['label_name'] = al_manager.current_labels[item['label_index']]
             
-            # Save CSV
             if csv_data:
                 df = pd.DataFrame(csv_data)
                 csv_buffer = io.StringIO()
@@ -2906,10 +3033,8 @@ async def export_project():
             # 3. Create comprehensive metadata
             training_config = automated_trainer.training_config if 'automated_trainer' in globals() else {}
             
-            # Get current labels from the frontend (stored by update-project-labels endpoint)
             current_labels = getattr(al_manager, 'current_labels', [])
             
-            # If no current labels, create defaults based on detected num_classes
             if not current_labels:
                 current_labels = [f"Class {i + 1}" for i in range(num_classes)]
             
@@ -2919,8 +3044,7 @@ async def export_project():
                'project_info': {
                     'project_name': al_manager.project_name,
                     'export_timestamp': datetime.now().isoformat(),
-                    # Export the last COMPLETED episode, not the next episode to run
-                    'current_episode': max(0, al_manager.episode - 1),  # Subtract 1 because episode is "next to run"
+                    'current_episode': max(0, al_manager.episode - 1),
                     'best_validation_accuracy': al_manager.best_val_acc,
                     'model_type': model_type_name,
                     'model_class': al_manager.model.__class__.__name__,
@@ -2960,7 +3084,6 @@ async def export_project():
                 'episode_breakdown': []
             }
             
-            # Add episode breakdown with detailed stats
             for i, episode_data in enumerate(al_manager.episode_history):
                 episode_info = {
                     'episode': i + 1,
@@ -2973,19 +3096,27 @@ async def export_project():
                 }
                 metadata['episode_breakdown'].append(episode_info)
             
-            # Save metadata to ZIP
             metadata_json = json.dumps(metadata, indent=2)
             zipf.writestr("metadata.json", metadata_json.encode('utf-8'))
             print(f"Added metadata to ZIP with labels: {current_labels}")
+
+            # 4. Add episode CSV files - MUST BE INSIDE THE with BLOCK
+            csv_dir = os.path.join(al_manager.output_dir, 'episode_csvs')
+            if os.path.exists(csv_dir):
+                print("Adding episode CSV files to export...")
+                for csv_file in os.listdir(csv_dir):
+                    if csv_file.endswith('.csv'):
+                        csv_path = os.path.join(csv_dir, csv_file)
+                        zipf.write(csv_path, os.path.join('episode_csvs', csv_file))
+                        print(f"Added episode CSV: {csv_file}")
         
-        # Prepare the ZIP file for download
+        # Prepare the ZIP file for download (outside the with block)
         zip_buffer.seek(0)
         zip_content = zip_buffer.getvalue()
         zip_filename = f"{al_manager.project_name}_project_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         
         print(f"ZIP file created successfully. Size: {len(zip_content)} bytes")
         
-        # Return as streaming response
         return Response(
             content=zip_content,
             media_type="application/zip",
@@ -4483,7 +4614,7 @@ async def upload_csv_paths_with_labels(
         
         # Find file path column
         file_path_column = None
-        path_column_names = ['file_path', 'filepath', 'path', 'filename', 'image', 'file']
+        path_column_names = ['file_path', 'filepath', 'path', 'filename', 'image', 'file', 'image_path']
         
         for field in fieldnames:
             if field.lower() in path_column_names:
@@ -4503,7 +4634,7 @@ async def upload_csv_paths_with_labels(
         # Find label column
         if label_column not in fieldnames:
             # Try common label column names
-            label_alternatives = ['annotation', 'label', 'class', 'category', 'target', 'classification']
+            label_alternatives = ['annotation', 'label', 'class', 'category', 'target', 'classification', 'diagnosis']
             found_alternative = None
             
             for field in fieldnames:
@@ -4537,7 +4668,7 @@ async def upload_csv_paths_with_labels(
                 if label_str:
                     unique_labels.add(label_str)
             
-            # Create mapping with alphabetical order (AMD before DR)
+            # Create mapping with alphabetical order
             sorted_labels = sorted(list(unique_labels))
             label_to_index = {label: idx for idx, label in enumerate(sorted_labels)}
             print(f"Created alphabetical label mapping: {label_to_index}")
@@ -4548,19 +4679,6 @@ async def upload_csv_paths_with_labels(
         labeled_images = []
         unlabeled_images = []
         failed_paths = []
-        
-        # Define search directories
-        import os
-        cwd = os.getcwd()
-        search_dirs = [
-            cwd,
-            os.path.join(cwd, 'data'),
-            os.path.join(cwd, 'images'),
-            os.path.join(cwd, 'uploads'),
-            os.path.join(cwd, 'static'),
-        ]
-        
-        print(f"Searching for images in: {search_dirs}")
         
         processed_count = 0
         for row_index, row in enumerate(csv_reader):
@@ -4573,25 +4691,49 @@ async def upload_csv_paths_with_labels(
                 
             # Get label if it exists
             label_str = row.get(label_column, "").strip() if label_column in row else None
-            
-            # Try to find the image file
             found_path = None
-            filename = os.path.basename(file_path)
             
-            # Try different path combinations
-            paths_to_try = [
-                file_path,  # Original path
-                *[os.path.join(d, filename) for d in search_dirs],  # Just filename in search dirs
-                *[os.path.join(d, file_path) for d in search_dirs],  # Full path in search dirs
-            ]
-            
-            for test_path in paths_to_try:
-                if os.path.exists(test_path):
-                    found_path = test_path
-                    break
+            # 1. If it's an absolute path and exists, use it immediately
+            if os.path.isabs(file_path) and os.path.exists(file_path):
+                found_path = file_path
+                if row_index < 3:  # Only print first few for debugging
+                    print(f"✓ Using absolute path: {file_path}")
+            else:
+                # 2. Only search directories if absolute path didn't work
+                filename = os.path.basename(file_path)
+                
+                cwd = os.getcwd()
+                search_dirs = [
+                    cwd,
+                    os.path.join(cwd, 'data'),
+                    os.path.join(cwd, 'images'),
+                    os.path.join(cwd, 'uploads'),
+                    os.path.join(cwd, 'static'),
+                ]
+                
+                # Try filename in search directories
+                for search_dir in search_dirs:
+                    test_path = os.path.join(search_dir, filename)
+                    if os.path.exists(test_path):
+                        found_path = test_path
+                        if row_index < 3:
+                            print(f"✓ Found by filename in: {test_path}")
+                        break
+                
+                # Try relative path from CSV in search directories
+                if not found_path:
+                    for search_dir in search_dirs:
+                        test_path = os.path.join(search_dir, file_path)
+                        if os.path.exists(test_path):
+                            found_path = test_path
+                            if row_index < 3:
+                                print(f"✓ Found by relative path in: {test_path}")
+                            break
             
             if not found_path:
                 failed_paths.append(file_path)
+                if len(failed_paths) <= 3:  # Only print first few failures
+                    print(f"✗ Could not find: {file_path}")
                 continue
             
             # Load the image
@@ -4602,20 +4744,36 @@ async def upload_csv_paths_with_labels(
                 # Generate unique image ID
                 img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
                 
-                # *** ADD THIS LINE: Store the original path ***
+                # Store the original path
                 al_manager.image_paths[img_id] = found_path
                 
                 # Process based on whether we have a label
                 if label_str:
-                    # Use the label mapping (either from frontend or created from CSV)
-                    if label_str in label_to_index:
-                        label_idx = label_to_index[label_str]
+                    label_idx = None
+                    
+                    try:
+                        numeric_label = int(label_str)
+                        # Check if this numeric value exists as an index in our mapping
+                        if numeric_label in label_to_index.values():
+                            label_idx = numeric_label
+                            if row_index < 3:
+                                print(f"Using numeric label directly: {numeric_label}")
+                        else:
+                            # Numeric label but not in our range - treat as string
+                            if label_str in label_to_index:
+                                label_idx = label_to_index[label_str]
+                    except ValueError:
+                        # Not a number, treat as string label
+                        if label_str in label_to_index:
+                            label_idx = label_to_index[label_str]
+                    
+                    if label_idx is not None:
                         al_manager.labeled_data[img_id] = (img_tensor, label_idx)
                         labeled_images.append(img_id)
-                        print(f"Labeled image {img_id} as '{label_str}' (index {label_idx})")
+                        if row_index < 3:
+                            print(f"Labeled image {img_id} with label index {label_idx}")
                     else:
-                        print(f"Warning: Label '{label_str}' not found in mapping {label_to_index}")
-                        # Add to unlabeled data instead
+                        print(f"Warning: Label '{label_str}' could not be mapped. Expected mapping: {label_to_index}")
                         al_manager.unlabeled_data[img_id] = img_tensor
                         unlabeled_images.append(img_id)
                 else:
@@ -4630,7 +4788,10 @@ async def upload_csv_paths_with_labels(
                 continue
         
         if processed_count == 0:
-            raise HTTPException(status_code=400, detail="Could not process any images")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Could not process any images. Failed paths: {failed_paths[:5]}"
+            )
         
         # Handle validation set
         if len(labeled_images) > 0:
@@ -4639,11 +4800,10 @@ async def upload_csv_paths_with_labels(
                 val_indices = labeled_images[:val_size]
                 remaining_labeled = labeled_images[val_size:]
                 
-                # Move validation images to validation set (KEEP their labels for initial training!)
                 for idx in val_indices:
                     if idx in al_manager.labeled_data:
                         img_tensor, label = al_manager.labeled_data.pop(idx)
-                        al_manager.validation_data[idx] = (img_tensor, label)  # Keep the label!
+                        al_manager.validation_data[idx] = (img_tensor, label)
                 
                 labeled_images = remaining_labeled
                 print(f"Moved {len(val_indices)} labeled images to validation set WITH labels")
@@ -4653,11 +4813,10 @@ async def upload_csv_paths_with_labels(
         val_indices_unlabeled = unlabeled_images[:val_size_unlabeled] if val_size_unlabeled > 0 else []
         remaining_unlabeled = unlabeled_images[val_size_unlabeled:] if val_size_unlabeled > 0 else unlabeled_images
         
-        # Move unlabeled validation images (these have no labels)
         for idx in val_indices_unlabeled:
             if idx in al_manager.unlabeled_data:
                 img_tensor = al_manager.unlabeled_data.pop(idx)
-                al_manager.validation_data[idx] = (img_tensor, None)  # No label
+                al_manager.validation_data[idx] = (img_tensor, None)
         
         print(f"Final label mapping used: {label_to_index}")
         print(f"Processing complete: {len(labeled_images)} labeled, {len(remaining_unlabeled)} unlabeled, {len(al_manager.validation_data)} validation")
@@ -5581,26 +5740,27 @@ async def continue_from_evaluation():
         if not al_manager.model:
             raise HTTPException(status_code=400, detail="No model initialized")
             
-        # Get the next batch for continuing active learning
         if len(al_manager.unlabeled_data) == 0:
             return {
                 "status": "complete",
                 "message": "No more unlabeled data available. Training complete!"
             }
             
-        # Get default training config
         strategy = getattr(automated_trainer, 'training_config', {}).get('sampling_strategy', 'least_confidence')
         batch_size = getattr(automated_trainer, 'training_config', {}).get('batch_size', 32)
         
-        # Get next batch using active learning strategy
         batch = al_manager.get_next_batch(strategy, min(batch_size, len(al_manager.unlabeled_data)))
         
-        return {
-            "status": "success", 
-            "message": f"Ready to continue with {len(batch)} new images for labeling",
-            "batch_size": len(batch)
-        }
+        # Store the batch so frontend can access it
+        al_manager.current_batch = [x["image_id"] for x in batch]
         
+        return {
+            "status": "success",
+            "message": f"Ready to continue with {len(batch)} new images for labeling",
+            "batch_size": len(batch),
+            "batch": batch  # Return the batch to frontend
+        }
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to continue from evaluation: {str(e)}")
 

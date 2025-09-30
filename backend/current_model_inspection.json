@@ -1016,11 +1016,11 @@
       ],
       "layer4.2.bn3.num_batches_tracked": [],
       "fc.weight": [
-        2,
+        5,
         2048
       ],
       "fc.bias": [
-        2
+        5
       ]
     },
     "parameter_names": [
@@ -1887,19 +1887,19 @@
     "has_features": false,
     "fc_info": {
       "type": "<class 'torch.nn.modules.linear.Linear'>",
-      "repr": "Linear(in_features=2048, out_features=2, bias=True)",
+      "repr": "Linear(in_features=2048, out_features=5, bias=True)",
       "has_in_features": true,
       "has_out_features": true,
       "in_features": 2048,
-      "out_features": 2
+      "out_features": 5
     }
   },
   "pytorch_model_info": {
     "device": "cpu",
     "dtype": "torch.float32",
     "requires_grad": true,
-    "total_parameters": 23512130,
-    "trainable_parameters": 23512130,
+    "total_parameters": 23518277,
+    "trainable_parameters": 23518277,
     "is_training": false
   },
   "detection_result": {

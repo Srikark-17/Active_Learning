@@ -946,19 +946,29 @@ Possible solutions:
 
   const handleContinueFromEvaluation = async () => {
     try {
-      setErrorMessage("Preparing next batch for active learning...");
+      setInfoMessage("Preparing next batch for active learning...");
 
       const result = await activeLearnAPI.continueFromEvaluation();
 
       if (result.status === "complete") {
         setErrorMessage(result.message);
       } else {
-        await getNextBatch();
-        setErrorMessage("Ready to continue active learning!");
+        // Use the batch returned by the backend
+        if (result.batch) {
+          setCurrentBatch(result.batch);
+          setCurrentImageIndex(0);
+          if (result.batch.length > 0) {
+            setCurrentImage(
+              activeLearnAPI.getImageUrl(result.batch[0].image_id)
+            );
+          }
+        }
+
+        setSuccessMessage("Ready to continue active learning!");
         setBatchStats({
-          totalImages: batchSize,
+          totalImages: result.batch_size || batchSize,
           completed: 0,
-          remaining: batchSize,
+          remaining: result.batch_size || batchSize,
           accuracy: validationAccuracy || 0,
           timeElapsed: "00:00",
         });
