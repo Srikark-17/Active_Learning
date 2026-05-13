@@ -17,6 +17,7 @@ import json
 import time
 import types
 import asyncio
+import concurrent.futures
 import glob
 import shutil
 import tempfile
@@ -27,12 +28,15 @@ import tempfile
 import shutil
 import pandas as pd
 from datetime import datetime
+from sklearn.metrics import f1_score as sklearn_f1_score
+import csv
+from io import StringIO
 
 class ProjectInit(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     
     project_name: str
-    model_type: Literal["resnet18", "resnet50"] = Field(
+    model_type: Literal["resnet18", "resnet50", "vit", "vision-transformer", "efficientnet", "custom"] = Field(
         description="Type of model to use (resnet18 or resnet50)"
     )
     num_classes: int = Field(gt=0, description="Number of classes to classify")
@@ -48,7 +52,7 @@ class ProjectInit(BaseModel):
         lt=1.0, 
         description="Initial labeled data ratio (0-1)"
     )
-    # Add training configuration fields
+
     sampling_strategy: str = Field(
         default="least_confidence",
         description="Active learning sampling strategy"
@@ -87,26 +91,26 @@ class SimpleViTClassifier(nn.Module):
     """Simple ViT-based classifier for RETFound and similar models"""
     def __init__(self, num_classes=2, feature_dim=768):
         super().__init__()
-        # This will be replaced with loaded ViT weights
-        self.feature_extractor = nn.Identity()  # Placeholder
+
+        self.feature_extractor = nn.Identity()
         self.classifier = nn.Linear(feature_dim, num_classes)
         
     def forward(self, x):
-        # This is a placeholder - will be replaced when loading RETFound weights
+
         features = self.feature_extractor(x)
         if len(features.shape) > 2:
-            features = features.mean(dim=1)  # Global average pooling
+            features = features.mean(dim=1)
         return self.classifier(features)
 
 def create_vit_model(num_classes=2, image_size=224, patch_size=16, embed_dim=768, num_heads=12, num_layers=12):
     """Create a proper Vision Transformer model"""
     try:
-        # Try to use timm if available for better ViT support
+
         import timm
         model = timm.create_model('vit_base_patch16_224', pretrained=True, num_classes=num_classes)
         return model
     except ImportError:
-        # Fallback to a custom ViT implementation
+
         return SimpleViTClassifier(num_classes=num_classes, feature_dim=embed_dim)
 
 class ImprovedViTClassifier(nn.Module):
@@ -117,14 +121,11 @@ class ImprovedViTClassifier(nn.Module):
         self.num_patches = (image_size // patch_size) ** 2
         self.embed_dim = embed_dim
         
-        # Patch embedding
         self.patch_embed = nn.Conv2d(3, embed_dim, kernel_size=patch_size, stride=patch_size)
         
-        # Position embeddings
         self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches + 1, embed_dim))
         self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
         
-        # Transformer blocks
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
@@ -134,28 +135,22 @@ class ImprovedViTClassifier(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        # Classification head
         self.norm = nn.LayerNorm(embed_dim)
         self.classifier = nn.Linear(embed_dim, num_classes)
         
     def forward(self, x):
         B = x.shape[0]
         
-        # Patch embedding
-        x = self.patch_embed(x)  # B, embed_dim, H//patch_size, W//patch_size
-        x = x.flatten(2).transpose(1, 2)  # B, num_patches, embed_dim
+        x = self.patch_embed(x)
+        x = x.flatten(2).transpose(1, 2)
         
-        # Add cls token
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat([cls_tokens, x], dim=1)
         
-        # Add position embeddings
         x = x + self.pos_embed
         
-        # Transformer
         x = self.transformer(x)
         
-        # Classification head (use cls token)
         x = self.norm(x[:, 0])
         x = self.classifier(x)
         
@@ -165,9 +160,9 @@ class ActiveLearningManager:
     def __init__(self):
         self.model = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.labeled_data = {}  # {image_id: (image_tensor, label)}
-        self.unlabeled_data = {}  # {image_id: image_tensor}
-        self.validation_data = {}  # {image_id: (image_tensor, label)}
+        self.labeled_data = {}
+        self.unlabeled_data = {}
+        self.validation_data = {}
         self.current_batch = []
         self.episode = 0
         self.annotation_tracking = {}
@@ -184,7 +179,6 @@ class ActiveLearningManager:
             'min_lr': 1e-6
         }
         
-        # Tracking metrics
         self.plot_episode_xvalues = []
         self.plot_episode_yvalues = []
         self.plot_epoch_xvalues = []
@@ -192,12 +186,12 @@ class ActiveLearningManager:
         self.best_val_acc = 0
         self.best_model_state = None
         self.training_config = {
-        'sampling_strategy': 'least_confidence',  # default strategy
-        'batch_size': 32,  # default batch size
-        'epochs': 10,  # default epochs
-        'learning_rate': 0.001,  # default learning rate
+        'sampling_strategy': 'least_confidence',
+        'batch_size': 32,
+        'epochs': 10,
+        'learning_rate': 0.001,
         'scheduler': {
-            'strategy': 'plateau',  # default scheduler strategy
+            'strategy': 'plateau',
             'params': {
                 'mode': 'max',
                 'factor': 0.1,
@@ -209,14 +203,13 @@ class ActiveLearningManager:
     }
 
         self.config = {
-            'val_split': 0.2,  # 20% validation like original script
-            'initial_labeled_ratio': 0.1,  # 10% initial labeled data
+            'val_split': 0.2,
+            'initial_labeled_ratio': 0.1,
         }
         
-        # Training history
-        self.episode_history = []  # List of dicts with episode metrics
+        self.episode_history = []
+        self.ground_truth_labels = {}
         
-        # Default transforms
         self.transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.RandomHorizontalFlip(),
@@ -241,17 +234,15 @@ class ActiveLearningManager:
 
     def initialize_project(self, project_name: str, model_name: str, num_classes: int, config: dict = None):
         try:
-            # Validation checks with more flexibility
+
             if not project_name:
                 raise ValueError("Project name is required")
                 
-            # Set up project
             self.project_name = project_name
             self.output_dir = os.path.join("output", project_name, 
                 datetime.now().strftime("%Y%m%d_%H%M%S"))
             os.makedirs(self.output_dir, exist_ok=True)
                 
-            # Initialize model based on type with enhanced custom support
             if model_name == "resnet18":
                 self.model = models.resnet18(pretrained=True)
                 num_features = self.model.fc.in_features
@@ -261,30 +252,31 @@ class ActiveLearningManager:
                 num_features = self.model.fc.in_features
                 self.model.fc = nn.Linear(num_features, num_classes)
             elif model_name == "vision-transformer" or model_name == "vit":
-                # Create a proper ViT architecture
+
                 self.model = create_vit_model(num_classes=num_classes)
             elif model_name == "custom":
-                # For custom models, start with a flexible base that can be adapted
+
                 print(f"Initializing custom model architecture for {num_classes} classes")
                 self.model = self._create_custom_model(num_classes)
             else:
-                # Handle other model types or treat as custom
+
                 print(f"Model type '{model_name}' not explicitly supported, treating as custom")
                 self.model = self._create_custom_model(num_classes, model_type=model_name)
                 
             self.model = self.model.to(self.device)
 
-            # Update training config if provided
+            self.training_config['model_type'] = model_name
+            self.training_config['num_classes'] = num_classes
+            self.training_config['project_name'] = project_name
+
             if config:
                 self.training_config.update(config)
 
-            # Initialize optimizer after model
             self.optimizer = torch.optim.Adam(
                 self.model.parameters(), 
                 lr=self.training_config['learning_rate']
             )
             
-            # Initialize LR scheduler with proper configuration
             scheduler_config = self.training_config.get('scheduler', {
                 'strategy': 'plateau',
                 'params': {
@@ -303,7 +295,6 @@ class ActiveLearningManager:
                 **scheduler_config['params']
             )
             
-            # Initialize checkpoint manager
             self.checkpoint_manager = CheckpointManager(self.output_dir)
                 
             return {
@@ -319,7 +310,7 @@ class ActiveLearningManager:
         Create a flexible custom model that can be adapted to different architectures
         """
         try:
-            # Try to create different types of custom models based on hints
+
             if "vit" in model_type.lower() or "transformer" in model_type.lower():
                 return self._create_custom_vit(num_classes)
             elif "resnet" in model_type.lower():
@@ -327,12 +318,12 @@ class ActiveLearningManager:
             elif "efficientnet" in model_type.lower():
                 return self._create_custom_efficientnet(num_classes)
             else:
-                # Default flexible architecture
+
                 return self._create_flexible_custom_model(num_classes)
                 
         except Exception as e:
             print(f"Error creating custom model: {e}")
-            # Fallback to a simple ResNet50
+
             model = models.resnet50(pretrained=True)
             num_features = model.fc.in_features
             model.fc = nn.Linear(num_features, num_classes)
@@ -359,7 +350,7 @@ class ActiveLearningManager:
     def _create_custom_efficientnet(self, num_classes):
         """Create a custom EfficientNet-style model"""
         try:
-            # Try to use timm for EfficientNet
+
             import timm
             model = timm.create_model('efficientnet_b0', pretrained=True, num_classes=num_classes)
             return model
@@ -374,7 +365,7 @@ class ActiveLearningManager:
         class FlexibleCustomModel(nn.Module):
             def __init__(self, num_classes):
                 super().__init__()
-                # Start with a basic CNN backbone
+
                 self.features = nn.Sequential(
                     nn.Conv2d(3, 64, kernel_size=3, padding=1),
                     nn.ReLU(inplace=True),
@@ -387,7 +378,6 @@ class ActiveLearningManager:
                     nn.AdaptiveAvgPool2d((7, 7))
                 )
                 
-                # Flexible classifier
                 self.classifier = nn.Sequential(
                     nn.Dropout(0.5),
                     nn.Linear(256 * 7 * 7, 512),
@@ -409,13 +399,12 @@ class ActiveLearningManager:
         Load weights into a custom model with flexible adaptation
         """
         try:
-            # First, try to determine the model type from the state dict
+
             model_type = self._detect_model_type_from_state_dict(state_dict)
             
             if num_classes is None:
                 num_classes = self._detect_num_classes_from_state_dict(state_dict)
             
-            # Create appropriate model based on detected type
             if model_type == "vit":
                 self.model = self._create_custom_vit(num_classes)
             elif model_type == "resnet":
@@ -423,7 +412,6 @@ class ActiveLearningManager:
             else:
                 self.model = self._create_flexible_custom_model(num_classes)
             
-            # Try to load the state dict
             missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
             
             if missing_keys:
@@ -442,15 +430,12 @@ class ActiveLearningManager:
         """Detect model type from state dict keys"""
         keys = list(state_dict.keys())
         
-        # Check for ViT indicators
         if any(key in str(keys) for key in ['cls_token', 'pos_embed', 'patch_embed']):
             return "vit"
         
-        # Check for ResNet indicators
         if any(key.startswith('layer') for key in keys):
             return "resnet"
         
-        # Check for other architectures
         if 'features' in str(keys) and 'classifier' in str(keys):
             return "cnn"
         
@@ -458,19 +443,18 @@ class ActiveLearningManager:
 
     def _detect_num_classes_from_state_dict(self, state_dict):
         """Detect number of classes from the final layer"""
-        # Look for common final layer patterns
+
         final_layer_patterns = ['fc.weight', 'classifier.weight', 'head.weight']
         
         for pattern in final_layer_patterns:
             if pattern in state_dict:
                 return state_dict[pattern].shape[0]
         
-        # Look for any layer ending with these patterns
         for key in state_dict.keys():
             if key.endswith('.weight') and any(pattern.split('.')[0] in key for pattern in final_layer_patterns):
                 return state_dict[key].shape[0]
         
-        return 2  # Default fallback
+        return 2
 
     def save_state(self, is_best: bool = False):
         """Save complete model and training state"""
@@ -513,7 +497,6 @@ class ActiveLearningManager:
                 
             self.model.eval()
             
-            # Get a sample of unlabeled data
             sample_size = min(num_samples, len(self.unlabeled_data))
             sample_ids = list(self.unlabeled_data.keys())[:sample_size]
             
@@ -526,12 +509,10 @@ class ActiveLearningManager:
                     outputs = self.model(img_tensor)
                     probs = torch.softmax(outputs, dim=1)
                     
-                    # Get top prediction
                     top_prob, top_class = torch.max(probs, dim=1)
                     confidence = float(top_prob.item())
                     predicted_class = int(top_class.item())
                     
-                    # Get all class probabilities
                     all_probs = []
                     for i, prob in enumerate(probs[0]):
                         all_probs.append({
@@ -539,7 +520,6 @@ class ActiveLearningManager:
                             'probability': float(prob.item())
                         })
                     
-                    # Sort by probability (highest first)
                     all_probs.sort(key=lambda x: x['probability'], reverse=True)
                     
                     predictions.append({
@@ -551,7 +531,6 @@ class ActiveLearningManager:
                     
                     all_confidences.append(confidence)
             
-            # Calculate overall statistics
             overall_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0
             
             return {
@@ -577,19 +556,17 @@ class ActiveLearningManager:
             if not self.model or len(self.unlabeled_data) == 0:
                 return None
                 
-            # Get evaluation data
             evaluation_data = self.evaluate_model_on_unlabeled(num_samples)
             
             if evaluation_data:
-                # Add uncertainty scores for each prediction
+
                 for pred in evaluation_data['predictions']:
-                    # Calculate uncertainty (1 - confidence)
+
                     pred['uncertainty'] = 1 - pred['confidence']
                     
-                    # Add prediction list in the format expected by the UI
                     pred['predictions'] = [
                         {
-                            'label': f"Class {i}",  # This will be updated with actual labels by the frontend
+                            'label': f"Class {i}",
                             'confidence': prob['probability']
                         }
                         for i, prob in enumerate(pred['all_probabilities'])
@@ -606,7 +583,6 @@ class ActiveLearningManager:
         if val_split is not None:
             self.config['val_split'] = val_split
 
-        # First, load all images
         all_data = {}
         for img_file in files:
             content = await img_file.read()
@@ -615,47 +591,34 @@ class ActiveLearningManager:
             img_id = len(all_data)
             all_data[img_id] = img_tensor
             
-            # STORE THE ORIGINAL FILENAME
             self.image_paths[img_id] = img_file.filename or f"uploaded_image_{img_id}.jpg"
 
-        # Calculate split sizes
         total_images = len(all_data)
         val_size = int(total_images * self.config['val_split'])
         initial_labeled_size = int((total_images - val_size) * self.config['initial_labeled_ratio'])
 
-        # Create random splits
         all_indices = list(all_data.keys())
         np.random.shuffle(all_indices)
 
-        # Split indices
         val_indices = all_indices[:val_size]
         initial_labeled_indices = all_indices[val_size:val_size + initial_labeled_size]
         unlabeled_indices = all_indices[val_size + initial_labeled_size:]
 
-        # FIXED: Properly assign data to sets
-        
-        # 1. Put unlabeled data in unlabeled set
         for idx in unlabeled_indices:
             self.unlabeled_data[idx] = all_data[idx]
 
-        # 2. Put initial labeled data in unlabeled set (they'll be moved to labeled when user labels them)
         for idx in initial_labeled_indices:
             self.unlabeled_data[idx] = all_data[idx]
 
-        # 3. Put validation data in validation set WITH TEMPORARY LABELS (for validation)
-        # In active learning, we typically assign random labels to validation set initially
-        # or use a small subset of pre-labeled data
         for idx in val_indices:
-            # For now, assign random labels to validation set so we can compute validation accuracy
-            # In a real scenario, you'd want some pre-labeled validation data
+
             temp_label = np.random.randint(0, self.model.fc.out_features if hasattr(self.model, 'fc') else 2)
             self.validation_data[idx] = (all_data[idx], temp_label)
 
-        # Save split information
         split_info = {
             "total_images": total_images,
             "validation": len(self.validation_data),
-            "initial_labeled": 0,  # Initially 0, will grow as user labels
+            "initial_labeled": 0,
             "unlabeled": len(self.unlabeled_data)
         }
 
@@ -669,7 +632,6 @@ class ActiveLearningManager:
             self.model = model.to(self.device)
             self.model_name = model_name
             
-            # Reinitialize optimizer with new model
             self.optimizer = torch.optim.Adam(
                 self.model.parameters(), 
                 lr=self.training_config.get('learning_rate', 0.001)
@@ -688,23 +650,23 @@ class ActiveLearningManager:
         """
         try:
             if hasattr(self.model, 'fc'):
-                # ResNet-style models
+
                 in_features = self.model.fc.in_features
                 self.model.fc = nn.Linear(in_features, num_classes)
             elif hasattr(self.model, 'classifier'):
-                # ViT or other models with classifier
+
                 if isinstance(self.model.classifier, nn.Linear):
                     in_features = self.model.classifier.in_features
                     self.model.classifier = nn.Linear(in_features, num_classes)
                 elif isinstance(self.model.classifier, nn.Sequential):
-                    # Find the last Linear layer
+
                     for i, layer in enumerate(reversed(self.model.classifier)):
                         if isinstance(layer, nn.Linear):
                             in_features = layer.in_features
                             self.model.classifier[-i-1] = nn.Linear(in_features, num_classes)
                             break
             elif hasattr(self.model, 'head'):
-                # ViT head
+
                 in_features = self.model.head.in_features
                 self.model.head = nn.Linear(in_features, num_classes)
             else:
@@ -713,7 +675,6 @@ class ActiveLearningManager:
                 
             self.model = self.model.to(self.device)
             
-            # Reinitialize optimizer
             self.optimizer = torch.optim.Adam(
                 self.model.parameters(), 
                 lr=self.training_config.get('learning_rate', 0.001)
@@ -738,10 +699,9 @@ class ActiveLearningManager:
                 'num_parameters': sum(p.numel() for p in self.model.parameters()),
                 'trainable_parameters': sum(p.numel() for p in self.model.parameters() if p.requires_grad),
                 'device': str(next(self.model.parameters()).device),
-                'model_type': 'custom'  # Default to custom
+                'model_type': 'custom'
             }
             
-            # Try to determine model type
             if hasattr(self.model, 'fc'):
                 info['final_layer'] = 'fc'
                 info['num_classes'] = self.model.fc.out_features
@@ -774,23 +734,19 @@ class ActiveLearningManager:
         if len(self.unlabeled_data) == 0:
             raise HTTPException(status_code=400, detail="No unlabeled data available")
             
-        # Ensure batch size isn't too large
         if batch_size > len(self.unlabeled_data):
             print(f"Warning: Requested batch size {batch_size} is larger than available unlabeled data ({len(self.unlabeled_data)})")
             batch_size = len(self.unlabeled_data)
             
-        # Add safety check for very small batch sizes
         if batch_size <= 0:
-            batch_size = min(32, len(self.unlabeled_data))  # Default to 32 or smaller if not enough data
+            batch_size = min(32, len(self.unlabeled_data))
             
         try:
-            # Get uncertainty scores for all unlabeled samples
+
             sample_scores = self._get_sample_scores(strategy)
             
-            # Select samples based on strategy
             selected_samples = self._select_samples(sample_scores, batch_size, strategy)
             
-            # Update current batch
             self.current_batch = [x["image_id"] for x in selected_samples]
             
             return selected_samples
@@ -798,26 +754,23 @@ class ActiveLearningManager:
             print(f"Error in get_next_batch: {str(e)}")
             traceback.print_exc()
             
-            # Try with random sampling as fallback
             if strategy != "random":
                 print("Falling back to random sampling strategy")
                 try:
-                    # Implement simple random sampling directly
+
                     image_ids = list(self.unlabeled_data.keys())
                     selected_ids = random.sample(image_ids, min(batch_size, len(image_ids)))
                     
                     selected_samples = []
                     for img_id in selected_ids:
-                        # Get image tensor
+
                         img_tensor = self.unlabeled_data[img_id].unsqueeze(0).to(self.device)
                         
-                        # Get model predictions without trying to compute uncertainty
                         with torch.no_grad():
                             try:
                                 outputs = self.model(img_tensor)
                                 probs = torch.softmax(outputs, dim=1)
                                 
-                                # Create prediction list
                                 predictions = [
                                     {"label": f"Label {i}", "confidence": float(p)} 
                                     for i, p in enumerate(probs[0])
@@ -825,15 +778,15 @@ class ActiveLearningManager:
                                 
                                 selected_samples.append({
                                     "image_id": img_id,
-                                    "uncertainty": 0.5,  # Default uncertainty
+                                    "uncertainty": 0.5,
                                     "predictions": predictions
                                 })
                             except Exception as inner_e:
-                                # If even simple prediction fails, use minimal info
+
                                 print(f"Error making predictions: {str(inner_e)}")
                                 selected_samples.append({
                                     "image_id": img_id,
-                                    "uncertainty": 0.5,  # Default uncertainty
+                                    "uncertainty": 0.5,
                                     "predictions": [{"label": "Unknown", "confidence": 0.0}]
                                 })
                     
@@ -845,7 +798,7 @@ class ActiveLearningManager:
                     raise
             
             else:
-                # If we're already using random sampling and it failed, re-raise
+
                 raise
     
     def _get_sample_scores(self, strategy: str) -> List[Tuple[int, float, List[dict]]]:
@@ -859,18 +812,15 @@ class ActiveLearningManager:
         
         with torch.no_grad():
             for img_id, img_tensor in self.unlabeled_data.items():
-                # Get model outputs
+
                 img_tensor = img_tensor.unsqueeze(0).to(self.device)
                 outputs = self.model(img_tensor)
                 probs = torch.softmax(outputs, dim=1)
                 
-                # Get features if needed
                 features = self._get_features(img_tensor) if strategy == "diversity" else None
                 
-                # Compute uncertainty
                 uncertainty = self._compute_uncertainty(probs, strategy, features)
                 
-                # Get predictions
                 predictions = [
                     {"label": f"Label {i}", "confidence": float(p)} 
                     for i, p in enumerate(probs[0])
@@ -886,14 +836,13 @@ class ActiveLearningManager:
         Select batch_size samples based on scores and strategy
         """
         if strategy == "diversity":
-            # For diversity, we want to maximize coverage
+
             selected = self._select_diverse_samples(sample_scores, batch_size)
         else:
-            # For uncertainty-based strategies, sort by score
+
             sample_scores.sort(key=lambda x: x[1], reverse=True)
             selected = sample_scores[:batch_size]
         
-        # Format selected samples
         return [
             {
                 "image_id": img_id,
@@ -908,39 +857,34 @@ class ActiveLearningManager:
         if not self.output_dir:
             return
         
-        # Create episode CSVs directory
         csv_dir = os.path.join(self.output_dir, 'episode_csvs')
         os.makedirs(csv_dir, exist_ok=True)
         
-        # Collect annotations for this episode
         episode_annotations = []
         
         for img_id, tracking_info in self.annotation_tracking.items():
             if tracking_info.get('episode') == self.episode:
-                # Get image path
+
                 image_path = self.image_paths.get(img_id, f"image_{img_id}")
                 
-                # Get label info
                 label_idx = tracking_info['label']
                 label_name = None
                 if hasattr(self, 'current_labels') and self.current_labels:
                     if label_idx < len(self.current_labels):
                         label_name = self.current_labels[label_idx]
                 
-                # Create annotation record
                 annotation = {
                     'image_id': img_id,
                     'image_path': image_path,
                     'label_index': label_idx,
                     'label_name': label_name if label_name else f"Class {label_idx}",
-                    'annotation_source': tracking_info['source'],  # 'human' or 'machine'
+                    'annotation_source': tracking_info['source'],
                     'confidence': tracking_info.get('confidence', 1.0) if tracking_info['source'] == 'machine' else None,
                     'episode': self.episode
                 }
                 
                 episode_annotations.append(annotation)
         
-        # Save to CSV if we have annotations
         if episode_annotations:
             csv_path = os.path.join(csv_dir, f'episode_{self.episode:03d}_annotations.csv')
             df = pd.DataFrame(episode_annotations)
@@ -1013,31 +957,26 @@ class ActiveLearningManager:
         selected = []
         remaining = sample_scores.copy()
         
-        # Select highest uncertainty sample first
         remaining.sort(key=lambda x: x[1], reverse=True)
         selected.append(remaining.pop(0))
         
-        # Greedily select rest based on maximum distance to selected set
         while len(selected) < batch_size and remaining:
-            # Get features for all remaining samples
+
             remaining_features = []
             for _, _, preds in remaining:
                 probs = torch.tensor([[p["confidence"] for p in preds]])
                 remaining_features.append(probs)
             remaining_features = torch.cat(remaining_features, dim=0)
             
-            # Get features for selected samples
             selected_features = []
             for _, _, preds in selected:
                 probs = torch.tensor([[p["confidence"] for p in preds]])
                 selected_features.append(probs)
             selected_features = torch.cat(selected_features, dim=0)
             
-            # Compute distances
             distances = torch.cdist(remaining_features, selected_features)
             min_distances = distances.min(dim=1)[0]
             
-            # Select sample with maximum minimum distance
             best_idx = min_distances.argmax().item()
             selected.append(remaining.pop(best_idx))
         
@@ -1050,7 +989,6 @@ class ActiveLearningManager:
         correct = 0
         total = 0
 
-        # Prepare training data
         all_images = []
         all_labels = []
         for img_tensor, label in self.labeled_data.values():
@@ -1063,7 +1001,6 @@ class ActiveLearningManager:
         X = torch.stack(all_images)
         y = torch.tensor(all_labels)
 
-        # Training loop
         indices = torch.randperm(len(all_images))
         batch_losses = []
 
@@ -1078,7 +1015,6 @@ class ActiveLearningManager:
             loss.backward()
             optimizer.step()
 
-            # Calculate accuracy
             _, predicted = torch.max(outputs.data, 1)
             total += batch_y.size(0)
             correct += (predicted == batch_y).sum().item()
@@ -1095,16 +1031,14 @@ class ActiveLearningManager:
         total_correct = 0
         total_samples = 0
         
-        # Get validation data that has labels
         labeled_validation = {}
         for idx, (tensor, label) in self.validation_data.items():
             if label is not None:
                 labeled_validation[idx] = (tensor, label)
         
-        # If no labeled validation data, use a portion of labeled training data for validation
         if len(labeled_validation) == 0 and len(self.labeled_data) > 0:
             print("No labeled validation data found. Using portion of training data for validation.")
-            # Use 20% of labeled data for validation
+
             val_size = max(1, len(self.labeled_data) // 5)
             val_items = list(self.labeled_data.items())[:val_size]
             labeled_validation = dict(val_items)
@@ -1126,6 +1060,57 @@ class ActiveLearningManager:
         print(f"Validation Accuracy: {validation_accuracy:.2f}% ({total_correct}/{total_samples})")
         return validation_accuracy
 
+    def validate_model_with_metrics(self):
+        """Validate and return (accuracy, weighted_f1).
+        
+        Collects all predictions and ground-truth labels from the validation
+        set (falling back to 20 % of labeled data when the validation set has
+        no labels), then computes both accuracy and weighted-average F1 with
+        sklearn so the scores are consistent and immune to class-imbalance.
+        
+        Returns:
+            (accuracy: float, f1: float)  — both expressed as percentages 0-100.
+        """
+        self.model.eval()
+
+        labeled_validation = {
+            idx: (tensor, label)
+            for idx, (tensor, label) in self.validation_data.items()
+            if label is not None
+        }
+        if len(labeled_validation) == 0 and len(self.labeled_data) > 0:
+            print("No labeled validation data — using 20 % of training data for validation.")
+            val_size = max(1, len(self.labeled_data) // 5)
+            labeled_validation = dict(list(self.labeled_data.items())[:val_size])
+
+        if len(labeled_validation) == 0:
+            print("Warning: No validation data available — returning (0, 0)")
+            return 0.0, 0.0
+
+        all_preds = []
+        all_labels = []
+
+        with torch.no_grad():
+            for idx, (img_tensor, label) in labeled_validation.items():
+                img_tensor = img_tensor.unsqueeze(0).to(self.device)
+                outputs = self.model(img_tensor)
+                _, predicted = torch.max(outputs, 1)
+                all_preds.append(predicted.item())
+                all_labels.append(int(label))
+
+        total = len(all_labels)
+        correct = sum(p == l for p, l in zip(all_preds, all_labels))
+        accuracy = 100.0 * correct / total
+
+        try:
+            f1 = sklearn_f1_score(all_labels, all_preds, average="weighted", zero_division=0) * 100.0
+        except Exception as e:
+            print(f"Warning: F1 computation failed ({e}), defaulting to 0")
+            f1 = 0.0
+
+        print(f"Validation — Accuracy: {accuracy:.2f}%  F1 (weighted): {f1:.2f}%  ({correct}/{total})")
+        return accuracy, f1
+
     def validate(self):
         """Validate model performance - improved for active learning"""
         try:
@@ -1133,13 +1118,11 @@ class ActiveLearningManager:
                 print("Warning: No validation data available")
                 return 0.0
                     
-            # Get labeled validation data
             labeled_validation = [
                 (img, label) for img, label in self.validation_data.values() 
                 if label is not None
             ]
             
-            # If no labeled validation data, we can't compute accuracy
             if len(labeled_validation) == 0:
                 print(f"Warning: No labeled validation data (0/{len(self.validation_data)} samples labeled)")
                 print("Validation data exists but needs labels. Consider labeling some validation samples.")
@@ -1189,26 +1172,21 @@ class ActiveLearningManager:
                     train_loss, train_acc = self.train_epoch(optimizer, criterion)
                     val_acc = self.validate()
 
-                    # Save metrics for plotting
                     self.plot_epoch_xvalues.append(epoch + 1)
                     self.plot_epoch_yvalues.append(train_loss)
 
-                    # Save best model
                     if val_acc > best_val_acc:
                         best_val_acc = val_acc
                         best_model = self.model.state_dict().copy()
 
-                    # Plot training progress
                     self.plot_training_progress(epoch + 1, train_loss, val_acc)
                 except Exception as e:
                     print(f"Error in epoch {epoch}: {str(e)}")
                     raise
 
-            # Save episode results
             self.plot_episode_xvalues.append(self.episode)
             self.plot_episode_yvalues.append(best_val_acc)
             
-            # Increment episode
             self.episode += 1
 
             return {
@@ -1225,21 +1203,18 @@ class ActiveLearningManager:
         """Plot and save training progress"""
         plt.figure(figsize=(12, 4))
         
-        # Loss plot
         plt.subplot(1, 2, 1)
         plt.plot(self.plot_epoch_xvalues, self.plot_epoch_yvalues)
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
         plt.title(f"Training Loss (Episode {self.episode})")
         
-        # Accuracy plot
         plt.subplot(1, 2, 2)
         plt.plot(self.plot_episode_xvalues, self.plot_episode_yvalues)
         plt.xlabel("Episode")
         plt.ylabel("Validation Accuracy")
         plt.title("Active Learning Progress")
         
-        # Save plot
         plt.savefig(os.path.join(self.output_dir, f"progress_ep{self.episode}_e{epoch}.png"))
         plt.close()
 
@@ -1292,16 +1267,13 @@ class ActiveLearningManager:
             if len(self.labeled_data) == 0:
                 raise ValueError("No labeled data available for training")
 
-            # Initialize checkpoint manager if not exists
             if self.checkpoint_manager is None:
                 self.checkpoint_manager = CheckpointManager(self.output_dir)
 
-            # Initialize optimizer
             optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
             
-            # Initialize scheduler with configurable strategy
             scheduler_config = self.training_config.get('scheduler', {
-                'strategy': 'plateau',  # default strategy
+                'strategy': 'plateau',
                 'params': {
                     'mode': 'max',
                     'factor': 0.1,
@@ -1311,7 +1283,6 @@ class ActiveLearningManager:
                 }
             })
             
-            # Create scheduler based on strategy
             if scheduler_config['strategy'] == 'plateau':
                 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                     optimizer, **scheduler_config['params']
@@ -1331,32 +1302,34 @@ class ActiveLearningManager:
                     steps_per_epoch=steps_per_epoch,
                     pct_start=scheduler_config['params'].get('warmup_pct', 0.3)
                 )
+            elif scheduler_config['strategy'] == 'step':
+                scheduler = torch.optim.lr_scheduler.StepLR(
+                    optimizer,
+                    step_size=scheduler_config['params'].get('step_size', max(1, epochs // 3)),
+                    gamma=scheduler_config['params'].get('gamma', 0.1)
+                )
             else:
                 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                     optimizer, mode='max', factor=0.1, patience=5, verbose=True
                 )
-
             criterion = nn.CrossEntropyLoss()
             best_val_acc = 0
+            best_f1 = 0.0
             best_model_state = None
             lr_history = []
 
-            # Training loop with validation
             for epoch in range(epochs):
-                # Train for one epoch
+
                 train_loss, train_acc = self.train_epoch(optimizer, criterion, batch_size)
                 
-                # Validate
-                val_acc = self.validate_model()
+                val_acc, val_f1 = self.validate_model_with_metrics()
                 
-                # Update learning rate based on scheduler strategy
                 current_lr = optimizer.param_groups[0]['lr']
                 if scheduler_config['strategy'] == 'plateau':
                     scheduler.step(val_acc)
                 else:
                     scheduler.step()
                 
-                # Record LR change
                 new_lr = optimizer.param_groups[0]['lr']
                 lr_history.append({
                     'epoch': epoch + 1,
@@ -1365,9 +1338,9 @@ class ActiveLearningManager:
                     'val_acc': val_acc
                 })
                 
-                # Save checkpoint if best model
                 if val_acc > best_val_acc:
                     best_val_acc = val_acc
+                    best_f1 = val_f1
                     best_model_state = self.model.state_dict().copy()
                     
                     try:
@@ -1401,7 +1374,6 @@ class ActiveLearningManager:
                         print(f"Warning: Failed to save checkpoint: {str(e)}")
                         pass
 
-                # Store training progress
                 self.plot_epoch_xvalues.append(epoch + 1)
                 self.plot_epoch_yvalues.append(train_loss)
 
@@ -1411,7 +1383,6 @@ class ActiveLearningManager:
                 print(f"Validation Accuracy: {val_acc:.2f}%")
                 print(f"Learning Rate: {new_lr:.6f}")
 
-            # Restore best model state
             if best_model_state is not None:
                 self.model.load_state_dict(best_model_state)
                 self.best_val_acc = best_val_acc
@@ -1424,7 +1395,6 @@ class ActiveLearningManager:
                 "lr_history": lr_history
             }
 
-            # Try to generate evaluation data
             evaluation_data = None
             try:
                 print("Generating evaluation data for model assessment...")
@@ -1436,19 +1406,17 @@ class ActiveLearningManager:
             except Exception as e:
                 print(f"Warning: Could not generate evaluation data: {str(e)}")
 
-            # Select next batch if training successful and no evaluation data
             try:
                 if evaluation_data is None:
-                    # Get next batch using current model (original behavior)
+
                     next_batch = self.get_next_batch(
                         strategy=self.training_config["sampling_strategy"],
                         batch_size=batch_size
                     )
                 else:
-                    # If we have evaluation data, we'll let the frontend handle the next batch
+
                     next_batch = None
                     
-                # Update episode metrics
                 episode_metrics = {
                     'episode': self.episode,
                     'train_result': train_result,
@@ -1457,17 +1425,16 @@ class ActiveLearningManager:
                     'labeled_size': len(self.labeled_data),
                     'unlabeled_size': len(self.unlabeled_data),
                     'best_val_acc': best_val_acc,
+                    'f1_score': best_f1,
                     'learning_rate': new_lr,
                     'lr_history': lr_history
                 }
                 
                 self.episode_history.append(episode_metrics)
                 
-                # Update episode tracking
                 self.plot_episode_xvalues.append(self.episode)
                 self.plot_episode_yvalues.append(best_val_acc)
                 
-                # Save episode checkpoint
                 if hasattr(self, 'checkpoint_manager') and self.checkpoint_manager:
                     try:
                         state = {
@@ -1505,11 +1472,10 @@ class ActiveLearningManager:
 
                 self.episode += 1
                 
-                # Return result with evaluation data if available
                 result = {
                     "status": "success",
                     "metrics": episode_metrics,
-                    "final_val_acc": best_val_acc  # Add this for backward compatibility
+                    "final_val_acc": best_val_acc
                 }
                 
                 if evaluation_data:
@@ -1541,19 +1507,17 @@ class ActiveLearningManager:
         )
         
         if checkpoint:
-            # Restore training state
+
             self.episode = checkpoint['episode']
             self.best_val_acc = checkpoint['best_val_acc']
             self.training_config = checkpoint['training_config']
             
-            # Restore data indices
             self.restore_data_splits(
                 checkpoint['labeled_indices'],
                 checkpoint['unlabeled_indices'],
                 checkpoint['validation_indices']
             )
             
-            # Restore metrics
             metrics = checkpoint['metrics']
             self.plot_episode_xvalues = metrics['episode_accuracies']['x']
             self.plot_episode_yvalues = metrics['episode_accuracies']['y']
@@ -1563,7 +1527,6 @@ class ActiveLearningManager:
             self.lr_config = checkpoint['lr_config']
             self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state'])
 
-            # Restore episode history
             self.episode_history = checkpoint['episode_history']
             
         return checkpoint
@@ -1588,7 +1551,6 @@ class ActiveLearningManager:
                 uncertainty = self._compute_uncertainty(probs, strategy, img_tensor)
                 uncertainties.append((img_id, uncertainty))
                 
-        # Sort by uncertainty and select batch
         uncertainties.sort(key=lambda x: x[1], reverse=True)
         selected_batch = uncertainties[:batch_size]
         
@@ -1606,16 +1568,16 @@ class ActiveLearningManager:
         """
         try:
             if strategy == "least_confidence":
-                # 1 - max probability
+
                 return float(1 - torch.max(probs).item())
                 
             elif strategy == "margin":
-                # Difference between top two probabilities
+
                 sorted_probs, _ = torch.sort(probs, dim=1, descending=True)
                 return float(sorted_probs[0][0] - sorted_probs[0][1]).item()
                 
             elif strategy == "entropy":
-                # Entropy of probability distribution
+
                 eps = 1e-10
                 probs = probs.clamp(min=eps, max=1-eps)
                 entropy = -(probs * torch.log(probs)).sum(dim=1)
@@ -1624,7 +1586,7 @@ class ActiveLearningManager:
             elif strategy == "diversity":
                 if features is None:
                     raise ValueError("Features required for diversity sampling")
-                # Compute diversity using feature space distance from labeled pool
+
                 return self._compute_diversity_score(features)
                 
             else:
@@ -1642,24 +1604,22 @@ class ActiveLearningManager:
             return 1.0
             
         try:
-            # Get features of labeled samples
+
             labeled_features = []
             self.model.eval()
             with torch.no_grad():
                 for img_tensor, _ in self.labeled_data.values():
                     img_tensor = img_tensor.unsqueeze(0).to(self.device)
-                    # Get features before final layer
+
                     feat = self._get_features(img_tensor)
                     labeled_features.append(feat)
                     
             labeled_features = torch.cat(labeled_features, dim=0)
             
-            # Compute average distance to labeled pool
             distances = torch.cdist(features, labeled_features)
             diversity_score = distances.mean().item()
             
-            # Normalize to [0,1]
-            return min(1.0, diversity_score / 10.0)  # Scale factor of 10 is arbitrary
+            return min(1.0, diversity_score / 10.0)
             
         except Exception as e:
             print(f"Error computing diversity score: {str(e)}")
@@ -1668,11 +1628,11 @@ class ActiveLearningManager:
     def _get_features(self, x: torch.Tensor) -> torch.Tensor:
         """Extract features from the model's penultimate layer"""
         if not hasattr(self.model, 'get_features'):
-            # If model doesn't have feature extraction, add it
+
             original_forward = self.model.forward
             
             def get_features(self, x: torch.Tensor) -> torch.Tensor:
-                # Remove the last layer temporarily
+
                 original_fc = self.fc
                 self.fc = nn.Identity()
                 features = self(x)
@@ -1691,13 +1651,13 @@ class ActiveLearningManager:
             size=min(batch_size, len(available_ids)), 
             replace=False
         )
-        return [(id, 0.0) for id in selected_ids]  # 0.0 as placeholder uncertainty
+        return [(id, 0.0) for id in selected_ids]
 
     def _prepare_batch_info(self, selected_batch):
         """Prepare detailed batch information including predictions"""
         batch_info = []
         for img_id, uncertainty in selected_batch:
-            # Get model predictions
+
             img_tensor = self.unlabeled_data[img_id].unsqueeze(0).to(self.device)
             with torch.no_grad():
                 outputs = self.model(img_tensor)
@@ -1761,37 +1721,34 @@ class ActiveLearningManager:
         Returns:
             Tuple of (success flag, message)
         """
-        # First ensure we have the correct output size if num_classes is provided
+
         if num_classes is not None:
-            # Resize the final layer
+
             in_features = resnet_model.fc.in_features
             resnet_model.fc = torch.nn.Linear(in_features, num_classes)
         
-        # Initialize a dictionary to track transferred knowledge
         transferred_knowledge = {
             "visual_features": False,
             "classification_head": False
         }
         
-        # Check if we can use patch embeddings as initial layers
         if 'patch_embed.proj.weight' in vit_state_dict:
-            # Extract the patch embedding weights
+
             patch_weights = vit_state_dict['patch_embed.proj.weight']
             
-            # Check if the shape is compatible with the first convolutional layer
             try:
                 first_conv = None
-                # Find the first conv layer in ResNet
+
                 if hasattr(resnet_model, 'conv1'):
                     first_conv = resnet_model.conv1
                 
                 if first_conv is not None:
-                    # Check if shapes are compatible or can be adapted
-                    if patch_weights.shape[0] == first_conv.weight.shape[0]:  # Same number of output channels
-                        # We can initialize with the patch embedding knowledge
+
+                    if patch_weights.shape[0] == first_conv.weight.shape[0]:
+
                         new_weights = torch.nn.functional.interpolate(
                             patch_weights, 
-                            size=first_conv.weight.shape[2:],  # Target kernel size
+                            size=first_conv.weight.shape[2:],
                             mode='bilinear'
                         )
                         first_conv.weight.data = new_weights
@@ -1799,34 +1756,29 @@ class ActiveLearningManager:
             except Exception as e:
                 print(f"Could not transfer patch embedding knowledge: {e}")
         
-        # Try to transfer classification head knowledge
         if 'head.weight' in vit_state_dict and hasattr(resnet_model, 'fc'):
             try:
                 vit_head_weight = vit_state_dict['head.weight']
                 vit_head_bias = vit_state_dict.get('head.bias', None)
                 
-                # Check if output dimensions match
                 if vit_head_weight.shape[0] == resnet_model.fc.weight.shape[0]:
-                    # If input dimensions don't match, we can use a simple projection
+
                     if vit_head_weight.shape[1] != resnet_model.fc.weight.shape[1]:
-                        # Create a simple projection matrix
+
                         projection = torch.zeros(
                             resnet_model.fc.weight.shape[1],
                             vit_head_weight.shape[1]
                         )
                         
-                        # Identity mapping for the smaller dimension
                         min_dim = min(projection.shape[0], projection.shape[1])
                         projection[:min_dim, :min_dim] = torch.eye(min_dim)
                         
-                        # Project the weights
                         new_weights = torch.matmul(vit_head_weight, projection.t())
                         resnet_model.fc.weight.data = new_weights
                     else:
-                        # Direct transfer
+
                         resnet_model.fc.weight.data = vit_head_weight
                     
-                    # Transfer bias if available
                     if vit_head_bias is not None and hasattr(resnet_model.fc, 'bias'):
                         resnet_model.fc.bias.data = vit_head_bias
                     
@@ -1834,13 +1786,11 @@ class ActiveLearningManager:
             except Exception as e:
                 print(f"Could not transfer classification head knowledge: {e}")
         
-        # Return success and information
         if any(transferred_knowledge.values()):
             return True, f"Adapted transformer model to ResNet. Transferred: {', '.join([k for k, v in transferred_knowledge.items() if v])}"
         else:
             return False, "Could not transfer knowledge from transformer to ResNet. Will only use initialization."
 
-    # Then update the existing adapt_pretrained_model method:
     def adapt_pretrained_model(self, model_state, freeze_layers=True, adaptation_layers=None):
         """
         Adapt a pre-trained model for active learning by optionally freezing layers
@@ -1852,27 +1802,20 @@ class ActiveLearningManager:
             adaptation_layers: List of layer names to specifically adapt
         """
         try:
-            # Check if this is a transformer-based model
+
             is_vit = any(k in ['cls_token', 'pos_embed', 'patch_embed'] for k in model_state.keys())
         
             if is_vit:
                 print("Detected ViT model (like RETFound). Performing specialized adaptation...")
                 
-                # For ViT models, we want to:
-                # 1. Load the feature extraction layers
-                # 2. Replace the classification head with our own
-                
-                # Remove the original head if it exists
                 keys_to_remove = [k for k in model_state.keys() if 'head' in k.lower()]
                 for key in keys_to_remove:
                     print(f"Removing original head layer: {key}")
                     del model_state[key]
                 
-                # Load the feature extraction weights
                 missing_keys, unexpected_keys = self.model.load_state_dict(model_state, strict=False)
                 print(f"Loaded ViT weights. Missing: {len(missing_keys)}, Unexpected: {len(unexpected_keys)}")
                 
-                # Freeze feature extraction layers if requested
                 if freeze_layers:
                     for name, param in self.model.named_parameters():
                         if 'classifier' not in name and 'head' not in name:
@@ -1882,21 +1825,18 @@ class ActiveLearningManager:
                 
                 return True
             
-            # Continue with standard adaptation
-            # Load the pretrained weights if not a transformer or transformer adaptation failed
             else:
                 if hasattr(self.model, 'load_state_dict'):
-                    # Try to load directly, with a non-strict option to allow for differences
+
                     try:
                         self.model.load_state_dict(model_state, strict=False)
                         print("Loaded pretrained model weights (non-strict)")
                     except Exception as e:
                         print(f"Error loading model directly: {str(e)}")
                         
-                        # Try to fix common key mismatches
                         fixed_state_dict = {}
                         for k, v in model_state.items():
-                            # Handle module prefix differences (common with DataParallel)
+
                             if k.startswith('module.') and not any(key.startswith('module.') for key in self.model.state_dict()):
                                 fixed_state_dict[k[7:]] = v
                             elif not k.startswith('module.') and any(key.startswith('module.') for key in self.model.state_dict()):
@@ -1904,19 +1844,17 @@ class ActiveLearningManager:
                             else:
                                 fixed_state_dict[k] = v
                         
-                        # Try loading with fixed keys
                         missing_keys, unexpected_keys = self.model.load_state_dict(fixed_state_dict, strict=False)
                         print(f"Loaded with key fixing. Missing keys: {len(missing_keys)}, Unexpected keys: {len(unexpected_keys)}")
                 else:
                     print("Model doesn't have load_state_dict method")
                     return False
             
-            # Freeze early layers if requested
             if freeze_layers:
-                # For ResNet models, freeze all layers except final FC
+
                 if isinstance(self.model, (torch.nn.Module)):
                     for name, param in self.model.named_parameters():
-                        # Don't freeze FC/classifier layers
+
                         if 'fc' not in name and 'classifier' not in name:
                             param.requires_grad = False
                         else:
@@ -1924,14 +1862,13 @@ class ActiveLearningManager:
                             
                 print("Early layers frozen for transfer learning")
             
-            # Modify specific adaptation layers if needed
             if adaptation_layers:
-                # Example: add dropout or modify specific layers
+
                 for layer_name in adaptation_layers:
                     if hasattr(self.model, layer_name):
                         layer = getattr(self.model, layer_name)
                         if layer_name == 'fc' and isinstance(layer, torch.nn.Linear):
-                            # Add dropout before FC layer
+
                             in_features = layer.in_features
                             out_features = layer.out_features
                             dropout_layer = torch.nn.Dropout(0.5)
@@ -1942,7 +1879,6 @@ class ActiveLearningManager:
                             setattr(self.model, layer_name, new_fc)
                             print(f"Added dropout to {layer_name}")
                             
-            # Reset optimizer with the new parameter settings
             self.optimizer = torch.optim.Adam(
                 self.model.parameters(), 
                 lr=self.training_config['learning_rate']
@@ -1960,26 +1896,22 @@ class CheckpointManager:
     def __init__(self, output_dir: str):
         self.output_dir = output_dir
         self.checkpoint_dir = os.path.join(output_dir, 'checkpoints')
-        # ENSURE DIRECTORY EXISTS
+
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         
     def save_checkpoint(self, state, is_best=False):
         """Save checkpoint with correct episode numbering and better error handling"""
         try:
-            # ENSURE DIRECTORY EXISTS BEFORE SAVING
+
             os.makedirs(self.checkpoint_dir, exist_ok=True)
             
-            # Use the episode from the state, not increment it
             episode = state.get('episode', 0)
             
-            # For regular checkpoints, use the current episode
             checkpoint_path = os.path.join(self.checkpoint_dir, f'checkpoint_ep{episode:03d}.pt')
             
-            # If this is marked as best, also save as best
             if is_best:
                 best_path = os.path.join(self.checkpoint_dir, 'model_best.pt')
                 
-            # Ensure the state includes all required fields with safe defaults
             safe_state = {
                 'episode': episode,
                 'model_state': state.get('model_state'),
@@ -1992,22 +1924,18 @@ class CheckpointManager:
                 'episode_history': state.get('episode_history', [])
             }
             
-            # Add optimizer state if available
             if 'optimizer_state' in state and state['optimizer_state']:
                 safe_state['optimizer_state'] = state['optimizer_state']
             
-            # Always include scheduler_state to avoid KeyError later (even if empty)
             if 'scheduler_state' in state and state['scheduler_state']:
                 safe_state['scheduler_state'] = state['scheduler_state']
             else:
                 safe_state['scheduler_state'] = {}
             
-            # Save the checkpoint with better error handling
             try:
                 torch.save(safe_state, checkpoint_path)
                 print(f"Checkpoint saved to: {checkpoint_path}")
                 
-                # Save as best if requested
                 if is_best:
                     torch.save(safe_state, best_path)
                     print(f"Best model saved to: {best_path}")
@@ -2016,7 +1944,7 @@ class CheckpointManager:
                 
             except Exception as save_error:
                 print(f"Error saving checkpoint file: {str(save_error)}")
-                # Try to save with a different filename if the original fails
+
                 alternative_path = os.path.join(self.checkpoint_dir, f'checkpoint_ep{episode}_{int(time.time())}.pt')
                 try:
                     torch.save(safe_state, alternative_path)
@@ -2028,7 +1956,7 @@ class CheckpointManager:
             
         except Exception as e:
             print(f"Error in save_checkpoint: {str(e)}")
-            # Don't let checkpoint errors break training
+
             print("Warning: Checkpoint save failed, but continuing training...")
             return None
             
@@ -2036,7 +1964,7 @@ class CheckpointManager:
         """Load model checkpoint with safe handling of missing components"""
         try:
             if checkpoint_path is None:
-                # Find the latest checkpoint
+
                 checkpoints = glob.glob(os.path.join(self.checkpoint_dir, 'checkpoint_ep*.pt'))
                 if not checkpoints:
                     print("No checkpoints found")
@@ -2049,22 +1977,20 @@ class CheckpointManager:
             
             print(f"Loading checkpoint from: {checkpoint_path}")
             
-            # Load checkpoint
             if torch.cuda.is_available():
-                checkpoint = torch.load(checkpoint_path)
+                checkpoint = torch.load(checkpoint_path, weights_only=False)
             else:
-                checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
+                checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'), weights_only=False)
             
             print(f"Checkpoint keys: {list(checkpoint.keys())}")
             
-            # Load model state
             if 'model_state' in checkpoint:
                 try:
                     model.load_state_dict(checkpoint['model_state'])
                     print("Model state loaded successfully")
                 except Exception as e:
                     print(f"Warning: Could not load model state: {e}")
-                    # Try loading with strict=False
+
                     try:
                         missing, unexpected = model.load_state_dict(checkpoint['model_state'], strict=False)
                         print(f"Model loaded with missing keys: {missing}, unexpected keys: {unexpected}")
@@ -2074,7 +2000,6 @@ class CheckpointManager:
             else:
                 print("Warning: No model state found in checkpoint")
             
-            # Load optimizer state if available and provided
             if optimizer is not None and 'optimizer_state' in checkpoint:
                 try:
                     optimizer.load_state_dict(checkpoint['optimizer_state'])
@@ -2084,18 +2009,17 @@ class CheckpointManager:
             elif optimizer is not None:
                 print("No optimizer state found in checkpoint")
             
-            # Load scheduler state SAFELY - only if both scheduler exists and checkpoint has scheduler_state
             if scheduler is not None and 'scheduler_state' in checkpoint and checkpoint['scheduler_state']:
                 try:
-                    # Check if the scheduler_state is not empty
+
                     scheduler_state = checkpoint['scheduler_state']
                     if scheduler_state and isinstance(scheduler_state, dict) and scheduler_state:
-                        # Check if scheduler has the load_state_dict method
+
                         if hasattr(scheduler, 'load_state_dict'):
                             scheduler.load_state_dict(scheduler_state)
                             print("Scheduler state loaded successfully")
                         elif hasattr(scheduler, 'scheduler') and hasattr(scheduler.scheduler, 'load_state_dict'):
-                            # Handle wrapped schedulers
+
                             if 'scheduler_state' in scheduler_state:
                                 scheduler.scheduler.load_state_dict(scheduler_state['scheduler_state'])
                             else:
@@ -2117,7 +2041,7 @@ class CheckpointManager:
             print(f"Error loading checkpoint: {str(e)}")
             import traceback
             traceback.print_exc()
-            return None
+            raise
         
     def get_best_model_path(self):
         """Get path to best model checkpoint"""
@@ -2133,14 +2057,13 @@ class AutomatedTrainingManager:
         self.batch_complete = asyncio.Event()
         self.current_batch = []
         self.last_training_start = None
-        self.training_timeout = 300  # 5 minutes timeout
+        self.training_timeout = 300
         
-        # Ensure training_config is properly initialized with default values
         self.training_config = {
-            'sampling_strategy': 'least_confidence',  # default strategy
-            'batch_size': 32,  # default batch size
-            'epochs': 10,  # default epochs
-            'learning_rate': 0.001  # default learning rate
+            'sampling_strategy': 'least_confidence',
+            'batch_size': 32,
+            'epochs': 10,
+            'learning_rate': 0.001
         }
         
         self.min_required_samples = 10
@@ -2151,7 +2074,6 @@ class AutomatedTrainingManager:
             print(f"Warning: config is not a dictionary: {type(config)}")
             return
             
-        # Update each field individually with type checking
         if 'sampling_strategy' in config and isinstance(config['sampling_strategy'], str):
             self.training_config['sampling_strategy'] = config['sampling_strategy']
             
@@ -2199,10 +2121,8 @@ class AutomatedTrainingManager:
         print(f"Labels in batch: {self.current_batch_labeled_count}/{self.current_batch_size}")
         print(f"Total labeled samples: {len(self.al_manager.labeled_data)}")
         
-        # Check and reset if training is stuck
         self.check_training_state()
         
-        # Only trigger training if we have completed the FULL batch AND aren't already training
         batch_is_complete = self.current_batch_labeled_count >= self.current_batch_size
         has_enough_samples = len(self.al_manager.labeled_data) >= self.min_required_samples
         
@@ -2226,7 +2146,6 @@ class AutomatedTrainingManager:
         try:
             print(f"Received config: {config}")
             
-            # Check and reset if training is stuck
             if self.check_training_state():
                 print("Reset stuck training state")
             
@@ -2246,7 +2165,6 @@ class AutomatedTrainingManager:
             self.stop_requested = False
             self.last_training_start = time.time()
             
-            # Get first batch if needed
             if not self.current_batch:
                 self.current_batch = self.al_manager.get_next_batch(
                     strategy=self.training_config['sampling_strategy'],
@@ -2279,7 +2197,6 @@ class AutomatedTrainingManager:
                 self.is_training = False
                 return
             
-            # Train the model
             training_result = self.al_manager.train_episode(
                 epochs=self.training_config['epochs'],
                 batch_size=self.training_config['batch_size'],
@@ -2288,10 +2205,9 @@ class AutomatedTrainingManager:
             
             print(f"Training completed. Validation accuracy: {self.al_manager.best_val_acc:.2f}%")
             
-            # **CHECK FOR EVALUATION DATA**
             if 'evaluation_data' in training_result and training_result['evaluation_data']:
                 print("Evaluation data found - evaluation screen should be shown")
-                # Don't get next batch automatically - let the evaluation screen handle it
+
                 self.is_training = False
                 self.last_training_start = None
                 return {
@@ -2302,7 +2218,6 @@ class AutomatedTrainingManager:
                     "validation_accuracy": self.al_manager.best_val_acc
                 }
             
-            # If no evaluation data, continue with normal batch flow
             if not self.stop_requested:
                 print("No evaluation data - getting next batch...")
                 self.current_batch = self.al_manager.get_next_batch(
@@ -2354,7 +2269,7 @@ class AutomatedTrainingManager:
     def stop_automated_training(self):
         """Stop the automated training cycle"""
         self.stop_requested = True
-        self.batch_complete.set()  # Release any waiting
+        self.batch_complete.set()
             
     def get_training_status(self):
         """Get current automated training status"""
@@ -2383,7 +2298,6 @@ class AutomatedTrainingManager:
             learning_rate=self.al_manager.config.get('learning_rate', 0.001)
         )
         
-        # Collect metrics after training
         metrics = {
             'training_metrics': training_result,
             'episode_accuracies': {
@@ -2398,7 +2312,6 @@ class AutomatedTrainingManager:
             'episode': self.al_manager.episode
         }
         
-        # Store metrics for UI to access
         self.current_metrics = metrics
         return metrics
 
@@ -2476,7 +2389,6 @@ class LRSchedulerManager:
             
         new_lr = self.get_lr()
         
-        # Record history
         self.history.append({
             'old_lr': current_lr,
             'new_lr': new_lr,
@@ -2504,7 +2416,6 @@ class LRSchedulerManager:
         self.strategy = state_dict['strategy']
         self.history = state_dict['history']
 
-# FastAPI app setup
 app = FastAPI()
 al_manager = ActiveLearningManager()
 
@@ -2527,19 +2438,18 @@ def adapt_pretrained_model(self, model_state, freeze_layers=True, adaptation_lay
         adaptation_layers: List of layer names to specifically adapt
     """
     try:
-        # Load the pretrained weights
+
         if hasattr(self.model, 'load_state_dict'):
-            # Try to load directly, with a non-strict option to allow for differences
+
             try:
                 self.model.load_state_dict(model_state, strict=False)
                 print("Loaded pretrained model weights (non-strict)")
             except Exception as e:
                 print(f"Error loading model directly: {str(e)}")
                 
-                # Try to fix common key mismatches
                 fixed_state_dict = {}
                 for k, v in model_state.items():
-                    # Handle module prefix differences (common with DataParallel)
+
                     if k.startswith('module.') and not any(key.startswith('module.') for key in self.model.state_dict()):
                         fixed_state_dict[k[7:]] = v
                     elif not k.startswith('module.') and any(key.startswith('module.') for key in self.model.state_dict()):
@@ -2547,19 +2457,17 @@ def adapt_pretrained_model(self, model_state, freeze_layers=True, adaptation_lay
                     else:
                         fixed_state_dict[k] = v
                 
-                # Try loading with fixed keys
                 missing_keys, unexpected_keys = self.model.load_state_dict(fixed_state_dict, strict=False)
                 print(f"Loaded with key fixing. Missing keys: {len(missing_keys)}, Unexpected keys: {len(unexpected_keys)}")
         else:
             print("Model doesn't have load_state_dict method")
             return False
         
-        # Freeze early layers if requested
         if freeze_layers:
-            # For ResNet models, freeze all layers except final FC
+
             if isinstance(self.model, (torch.nn.Module)):
                 for name, param in self.model.named_parameters():
-                    # Don't freeze FC/classifier layers
+
                     if 'fc' not in name and 'classifier' not in name:
                         param.requires_grad = False
                     else:
@@ -2567,14 +2475,13 @@ def adapt_pretrained_model(self, model_state, freeze_layers=True, adaptation_lay
                         
             print("Early layers frozen for transfer learning")
         
-        # Modify specific adaptation layers if needed
         if adaptation_layers:
-            # Example: add dropout or modify specific layers
+
             for layer_name in adaptation_layers:
                 if hasattr(self.model, layer_name):
                     layer = getattr(self.model, layer_name)
                     if layer_name == 'fc' and isinstance(layer, torch.nn.Linear):
-                        # Add dropout before FC layer
+
                         in_features = layer.in_features
                         out_features = layer.out_features
                         dropout_layer = torch.nn.Dropout(0.5)
@@ -2591,7 +2498,6 @@ def adapt_pretrained_model(self, model_state, freeze_layers=True, adaptation_lay
         print(f"Error adapting pretrained model: {str(e)}")
         return False
 
-# Add a new endpoint to perform model adaptation
 @app.post("/adapt-pretrained-model")
 async def adapt_pretrained_model(
     freeze_layers: bool = Form(True),
@@ -2604,17 +2510,14 @@ async def adapt_pretrained_model(
         if not al_manager.model:
             raise HTTPException(status_code=400, detail="No model has been imported yet")
         
-        # Get the current model state
         model_state = al_manager.model.state_dict()
         
-        # Determine adaptation layers based on adaptation type
         adaptation_layers = None
         if adaptation_type == "last_layer":
-            adaptation_layers = ["fc"]  # Only adapt final layer
+            adaptation_layers = ["fc"]
         elif adaptation_type == "mid_layers":
-            adaptation_layers = ["layer4", "fc"]  # Adapt last conv block and FC
+            adaptation_layers = ["layer4", "fc"]
         
-        # Perform adaptation
         success = al_manager.adapt_pretrained_model(
             model_state=model_state,
             freeze_layers=freeze_layers,
@@ -2640,7 +2543,6 @@ async def initialize_project(request: ProjectInit):
     try:
         print(f"Initializing project with config: {request}")
         
-        # Create training config from request
         training_config = {
             'sampling_strategy': request.sampling_strategy if hasattr(request, 'sampling_strategy') else 'least_confidence',
             'batch_size': request.batch_size if hasattr(request, 'batch_size') else 32,
@@ -2648,7 +2550,6 @@ async def initialize_project(request: ProjectInit):
             'learning_rate': request.learning_rate if hasattr(request, 'learning_rate') else 0.001,
         }
         
-        # Initialize project with config
         result = al_manager.initialize_project(
             project_name=request.project_name,
             model_name=request.model_type,
@@ -2699,11 +2600,16 @@ async def get_batch(request: BatchRequest):
                 status_code=400,
                 detail="No unlabeled data available"
             )
-            
-        return al_manager.get_next_batch(
+        
+        batch = al_manager.get_next_batch(
             strategy=request.strategy,
             batch_size=request.batch_size
         )
+
+        automated_trainer.current_batch_size = len(batch)
+        automated_trainer.current_batch_labeled_count = 0
+
+        return batch
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2718,26 +2624,21 @@ async def submit_label(submission: LabelSubmission):
             image_id=submission.image_id,
             label=submission.label
         )
-        
-        # Notify automated trainer of label submission
-        if automated_trainer.is_training:
-            print("Automated trainer is already training")
-        else:
-            print(f"Current batch progress: {automated_trainer.current_batch_labeled_count + 1}/{automated_trainer.current_batch_size}")
-            automated_trainer.on_label_submitted()
-            
-            # Check if this submission completes the batch
-            batch_complete = automated_trainer.current_batch_labeled_count >= automated_trainer.current_batch_size
-            if batch_complete:
-                print("Batch complete - Initiating training cycle")
-            
+
+        total = automated_trainer.current_batch_size
+        automated_trainer.current_batch_labeled_count += 1
+        labeled = automated_trainer.current_batch_labeled_count % total if total > 0 else automated_trainer.current_batch_labeled_count
+        if labeled == 0:
+            labeled = total
+        print(f"Current batch progress: {labeled}/{total}")
+
         return {
-            **result,  # Include the original result
-            "batch_complete": automated_trainer.current_batch_labeled_count >= automated_trainer.current_batch_size,
+            **result,
+            "batch_complete": total > 0 and labeled >= total,
             "is_training": automated_trainer.is_training,
             "current_progress": {
-                "labeled": automated_trainer.current_batch_labeled_count,
-                "total": automated_trainer.current_batch_size
+                "labeled": labeled,
+                "total": total
             }
         }
     except Exception as e:
@@ -2786,6 +2687,11 @@ async def get_status():
 @app.get("/metrics")
 async def get_metrics():
     try:
+
+        episode_f1_scores = {
+            "x": [ep["episode"] for ep in al_manager.episode_history if "f1_score" in ep],
+            "y": [ep["f1_score"] for ep in al_manager.episode_history if "f1_score" in ep],
+        }
         metrics = {
             "best_val_acc": al_manager.best_val_acc,
             "current_episode": al_manager.episode,
@@ -2793,12 +2699,13 @@ async def get_metrics():
                 "x": al_manager.plot_episode_xvalues,
                 "y": al_manager.plot_episode_yvalues
             },
+            "episode_f1_scores": episode_f1_scores,
             "current_epoch_losses": {
                 "x": al_manager.plot_epoch_xvalues,
                 "y": al_manager.plot_epoch_yvalues
             }
         }
-        print("Sending metrics:", metrics)  # Debug log
+        print("Sending metrics:", metrics)
         return metrics
     except Exception as e:
         print(f"Error getting metrics: {str(e)}")
@@ -2810,12 +2717,10 @@ async def get_image(image_id: int):
     try:
         print(f"Serving image {image_id}")
         
-        # Check if the ID is valid
         if not isinstance(image_id, int) or image_id < 0:
             print(f"Invalid image ID format: {image_id}")
             raise HTTPException(status_code=400, detail="Invalid image ID format")
         
-        # Get tensor based on where the image is stored
         tensor = None
         location = None
         
@@ -2838,38 +2743,32 @@ async def get_image(image_id: int):
             
         print(f"Found image {image_id} in {location}")
             
-        # Ensure tensor is on CPU and in the right format
         try:
             tensor = tensor.cpu()
         except Exception as e:
             print(f"Error moving tensor to CPU: {str(e)}")
             raise HTTPException(status_code=500, detail="Error processing image tensor")
         
-        # Check tensor shape and type
         print(f"Tensor shape: {tensor.shape}, dtype: {tensor.dtype}")
         
         try:
-            # Denormalize the tensor
+
             mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
             std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
             tensor = tensor * std + mean
                 
-            # Convert tensor to image
             img_array = tensor.numpy().transpose(1, 2, 0)
             img_array = np.clip(img_array, 0, 1)
             img_array = (img_array * 255).astype(np.uint8)
             
-            # Check array shape and values
             print(f"Image array shape: {img_array.shape}, min: {img_array.min()}, max: {img_array.max()}")
             
             img = Image.fromarray(img_array)
             
-            # Save to byte stream with error handling
             img_byte_arr = io.BytesIO()
             img.save(img_byte_arr, format='PNG')
             img_byte_arr = img_byte_arr.getvalue()
             
-            # Add caching headers
             headers = {
                 'Cache-Control': 'public, max-age=31536000',
                 'ETag': f'"{hash(img_byte_arr)}"'
@@ -2883,16 +2782,16 @@ async def get_image(image_id: int):
         except Exception as e:
             error_msg = f"Error converting tensor to image: {str(e)}"
             print(error_msg)
-            traceback.print_exc()  # Print full traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=error_msg)
             
     except HTTPException:
-        # Re-raise HTTP exceptions directly
+
         raise
     except Exception as e:
         error_msg = f"Error serving image {image_id}: {str(e)}"
         print(error_msg)
-        traceback.print_exc()  # Print full traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=error_msg)
 
 def get_model_num_classes(model):
@@ -2900,40 +2799,33 @@ def get_model_num_classes(model):
     Safely get the number of output classes from different model architectures
     """
     try:
-        # ResNet models
+
         if hasattr(model, 'fc') and hasattr(model.fc, 'out_features'):
             return model.fc.out_features
         
-        # ViT models or custom models with classifier
         elif hasattr(model, 'classifier'):
             if hasattr(model.classifier, 'out_features'):
                 return model.classifier.out_features
             elif isinstance(model.classifier, nn.Sequential):
-                # Look for the last Linear layer in Sequential classifier
+
                 for layer in reversed(model.classifier):
                     if isinstance(layer, nn.Linear):
                         return layer.out_features
         
-        # Look for head layer (common in ViT)
         elif hasattr(model, 'head') and hasattr(model.head, 'out_features'):
             return model.head.out_features
         
-        # Custom ViT classifier
         elif hasattr(model, 'classifier') and isinstance(model.classifier, nn.Linear):
             return model.classifier.out_features
         
-        # Sequential model - look for last Linear layer
         elif isinstance(model, nn.Sequential):
             for layer in reversed(model):
                 if isinstance(layer, nn.Linear):
                     return layer.out_features
         
-        # If all else fails, try to infer from the model's forward pass
-        # This is more risky but can work as a last resort
         print(f"Warning: Could not determine num_classes for model type {type(model)}")
         print(f"Model structure: {model}")
         
-        # Default fallback
         return 2
         
     except Exception as e:
@@ -2959,11 +2851,9 @@ async def export_project():
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             print("Created ZIP buffer...")
             
-            # Add the model inspection JSON to the ZIP
             with open("current_model_inspection.json", 'r') as f:
                 zipf.writestr("model_inspection.json", f.read())
             
-            # 1. Export model
             model_type_name = model_info.get('detection_result', {}).get('detected_type', 'custom')
             if model_type_name == 'resnet':
                 model_type_name = model_info.get('detection_result', {}).get('variant', 'resnet50')
@@ -2994,7 +2884,6 @@ async def export_project():
             zipf.writestr("model.pt", model_buffer.getvalue())
             print("Added model to ZIP...")
 
-            # 2. Create annotated CSV with ALL images and their REAL paths
             csv_data = []
             
             def get_image_info(img_id, img_tensor, label, split_type):
@@ -3030,7 +2919,6 @@ async def export_project():
                 zipf.writestr("annotations.csv", csv_buffer.getvalue().encode('utf-8'))
                 print("Added CSV with real paths to ZIP...")
             
-            # 3. Create comprehensive metadata
             training_config = automated_trainer.training_config if 'automated_trainer' in globals() else {}
             
             current_labels = getattr(al_manager, 'current_labels', [])
@@ -3100,7 +2988,6 @@ async def export_project():
             zipf.writestr("metadata.json", metadata_json.encode('utf-8'))
             print(f"Added metadata to ZIP with labels: {current_labels}")
 
-            # 4. Add episode CSV files - MUST BE INSIDE THE with BLOCK
             csv_dir = os.path.join(al_manager.output_dir, 'episode_csvs')
             if os.path.exists(csv_dir):
                 print("Adding episode CSV files to export...")
@@ -3110,7 +2997,6 @@ async def export_project():
                         zipf.write(csv_path, os.path.join('episode_csvs', csv_file))
                         print(f"Added episode CSV: {csv_file}")
         
-        # Prepare the ZIP file for download (outside the with block)
         zip_buffer.seek(0)
         zip_content = zip_buffer.getvalue()
         zip_filename = f"{al_manager.project_name}_project_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
@@ -3133,23 +3019,20 @@ async def export_project():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/import-model")
-async def import_model(uploaded_file: UploadFile = File(...)):  # Add File import and make it required
+async def import_model(uploaded_file: UploadFile = File(...)):
     """Import a previously exported model"""
     try:
-        # Read model file
+
         content = await uploaded_file.read()
         
-        # Load model data with safe device mapping
         if torch.cuda.is_available():
             model_data = torch.load(io.BytesIO(content))
         else:
             model_data = torch.load(io.BytesIO(content), map_location=torch.device('cpu'))
             
-        # Load configuration
         config = model_data['model_config']
         training_config = config.get('training_config', {})
         
-        # Initialize model first if not already done
         if al_manager.model is None:
             num_classes = len(config.get('labels', [])) or config.get('num_classes', 2)
             init_result = await al_manager.initialize_project(
@@ -3158,20 +3041,16 @@ async def import_model(uploaded_file: UploadFile = File(...)):  # Add File impor
                 num_classes=num_classes
             )
             
-        # Set all the manager properties from the imported model
         al_manager.project_name = config['project_name']
         al_manager.episode = config['episode']
         
-        # Safely set metrics
         metrics = config.get('metrics', {})
         episode_accuracies = metrics.get('episode_accuracies', {'x': [], 'y': []})
         al_manager.plot_episode_xvalues = episode_accuracies['x']
         al_manager.plot_episode_yvalues = episode_accuracies['y']
         
-        # Load model state
         al_manager.model.load_state_dict(model_data['model_state'])
         
-        # Update automated trainer config if available
         if 'automated_trainer' in globals():
             automated_trainer.training_config.update({
                 'sampling_strategy': training_config.get('sampling_strategy', 'least_confidence'),
@@ -3194,7 +3073,7 @@ async def import_model(uploaded_file: UploadFile = File(...)):  # Add File impor
         }
         
     except Exception as e:
-        print(f"Error importing model: {str(e)}")  # Log the error
+        print(f"Error importing model: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
 def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
@@ -3203,16 +3082,13 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
         if len(self.labeled_data) == 0:
             raise ValueError("No labeled data available for training")
 
-        # Initialize checkpoint manager if not exists
         if self.checkpoint_manager is None:
             self.checkpoint_manager = CheckpointManager(self.output_dir)
 
-        # Initialize optimizer
         optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         
-        # Initialize scheduler with configurable strategy
         scheduler_config = self.training_config.get('scheduler', {
-            'strategy': 'plateau',  # default strategy
+            'strategy': 'plateau',
             'params': {
                 'mode': 'max',
                 'factor': 0.1,
@@ -3222,7 +3098,6 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
             }
         })
         
-        # Create scheduler based on strategy
         if scheduler_config['strategy'] == 'plateau':
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, **scheduler_config['params']
@@ -3242,6 +3117,12 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
                 steps_per_epoch=steps_per_epoch,
                 pct_start=scheduler_config['params'].get('warmup_pct', 0.3)
             )
+        elif scheduler_config['strategy'] == 'step':
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=scheduler_config['params'].get('step_size', max(1, epochs // 3)),
+                gamma=scheduler_config['params'].get('gamma', 0.1)
+            )
         else:
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode='max', factor=0.1, patience=5, verbose=True
@@ -3249,25 +3130,22 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
 
         criterion = nn.CrossEntropyLoss()
         best_val_acc = 0
+        best_f1 = 0.0
         best_model_state = None
         lr_history = []
 
-        # Training loop with validation
         for epoch in range(epochs):
-            # Train for one epoch
+
             train_loss, train_acc = self.train_epoch(optimizer, criterion, batch_size)
             
-            # Validate
-            val_acc = self.validate_model()
+            val_acc, val_f1 = self.validate_model_with_metrics()
             
-            # Update learning rate based on scheduler strategy
             current_lr = optimizer.param_groups[0]['lr']
             if scheduler_config['strategy'] == 'plateau':
                 scheduler.step(val_acc)
             else:
                 scheduler.step()
             
-            # Record LR change
             new_lr = optimizer.param_groups[0]['lr']
             lr_history.append({
                 'epoch': epoch + 1,
@@ -3276,12 +3154,11 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
                 'val_acc': val_acc
             })
             
-            # Save checkpoint if best model
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
+                best_f1 = val_f1
                 best_model_state = self.model.state_dict().copy()
                 
-                # Try to save checkpoint but don't fail training if it doesn't work
                 try:
                     if self.checkpoint_manager:
                         state = {
@@ -3317,7 +3194,6 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
                     print(f"Warning: Failed to save checkpoint: {str(checkpoint_error)}")
                     print("Training will continue without checkpoint...")
 
-            # Store training progress
             self.plot_epoch_xvalues.append(epoch + 1)
             self.plot_epoch_yvalues.append(train_loss)
 
@@ -3327,7 +3203,6 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
             print(f"Validation Accuracy: {val_acc:.2f}%")
             print(f"Learning Rate: {new_lr:.6f}")
 
-        # Restore best model state
         if best_model_state is not None:
             self.model.load_state_dict(best_model_state)
             self.best_val_acc = best_val_acc
@@ -3340,7 +3215,6 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
             "lr_history": lr_history
         }
 
-        # **NEW: Get evaluation data on next unlabeled images**
         evaluation_data = None
         try:
             evaluation_data = self.get_evaluation_batch(num_samples=10)
@@ -3349,19 +3223,17 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
         except Exception as e:
             print(f"Warning: Could not generate evaluation data: {str(e)}")
 
-        # Select next batch if training successful and no evaluation data
         try:
             if evaluation_data is None:
-                # Get next batch using current model (original behavior)
+
                 next_batch = self.get_next_batch(
                     strategy=self.training_config["sampling_strategy"],
                     batch_size=batch_size
                 )
             else:
-                # If we have evaluation data, we'll let the frontend handle the next batch
+
                 next_batch = None
                 
-            # Update episode metrics
             episode_metrics = {
                 'episode': self.episode,
                 'train_result': train_result,
@@ -3370,17 +3242,16 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
                 'labeled_size': len(self.labeled_data),
                 'unlabeled_size': len(self.unlabeled_data),
                 'best_val_acc': best_val_acc,
+                'f1_score': best_f1,
                 'learning_rate': new_lr,
                 'lr_history': lr_history
             }
             
             self.episode_history.append(episode_metrics)
             
-            # Update episode tracking
             self.plot_episode_xvalues.append(self.episode)
             self.plot_episode_yvalues.append(best_val_acc)
             
-            # Save episode checkpoint
             if hasattr(self, 'checkpoint_manager'):
                 state = {
                     'episode': self.episode,
@@ -3410,11 +3281,10 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
 
             self.episode += 1
             
-            # **NEW: Return evaluation data if available**
             result = {
                 "status": "success",
                 "metrics": episode_metrics,
-                "final_val_acc": best_val_acc  # Add this for backward compatibility
+                "final_val_acc": best_val_acc
             }
             
             if evaluation_data:
@@ -3435,8 +3305,31 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
 
 @app.get("/episode-history")
 async def get_episode_history():
+    """Return per-episode metrics including accuracy and F1 score.
+    
+    Each episode dict now contains:
+      - episode         (int)   episode number
+      - best_val_acc    (float) best validation accuracy in that episode, as %
+      - f1_score        (float) weighted F1 at best-accuracy checkpoint, as %
+      - labeled_size    (int)
+      - unlabeled_size  (int)
+      - strategy        (str)
+      - batch_size      (int)
+    """
+
+    clean_episodes = []
+    for ep in al_manager.episode_history:
+        clean_episodes.append({
+            "episode":       ep.get("episode"),
+            "best_val_acc":  round(ep.get("best_val_acc", 0.0), 2),
+            "f1_score":      round(ep["f1_score"], 2) if ep.get("f1_score") is not None else None,
+            "labeled_size":  ep.get("labeled_size", 0),
+            "unlabeled_size": ep.get("unlabeled_size", 0),
+            "strategy":      ep.get("strategy", ""),
+            "batch_size":    ep.get("batch_size", 0),
+        })
     return {
-        "episodes": al_manager.episode_history,
+        "episodes": clean_episodes,
         "current_episode": al_manager.episode
     }
 
@@ -3446,8 +3339,9 @@ async def get_validation_status():
     return al_manager.get_validation_status()
 
 automated_trainer = AutomatedTrainingManager(al_manager)
+_thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+_training_state = {"running": False, "result": None, "error": None}
 
-# Add new endpoints
 @app.post("/start-automated-training")
 async def start_automated_training(config: TrainingConfig):
     """Start automated training with configuration"""
@@ -3466,7 +3360,6 @@ async def stop_automated_training():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Add automated training status endpoint
 @app.get("/automated-training-status")
 async def get_automated_training_status():
     """Get current automated training status"""
@@ -3479,7 +3372,6 @@ async def get_next_batch():
         print("\n=== Getting Next Batch ===")
         print(f"Current state: Labeled data: {len(al_manager.labeled_data)}, Unlabeled data: {len(al_manager.unlabeled_data)}")
         
-        # Make sure we have unlabeled data
         if len(al_manager.unlabeled_data) == 0:
             print("No unlabeled data available")
             return {
@@ -3490,8 +3382,7 @@ async def get_next_batch():
                 "validation_count": len(al_manager.validation_data)
             }
         
-        # Make sure batch size is valid, with explicit type checking and fallbacks
-        batch_size = 32  # Default batch size
+        batch_size = 32
         try:
             config_batch_size = automated_trainer.training_config.get('batch_size')
             if config_batch_size is not None and isinstance(config_batch_size, (int, float)) and config_batch_size > 0:
@@ -3500,15 +3391,13 @@ async def get_next_batch():
             print(f"Error getting batch size from config: {str(e)}")
             print(f"Using default batch size: {batch_size}")
         
-        # Add safety check for batch size
         if batch_size > len(al_manager.unlabeled_data):
             print(f"Batch size {batch_size} is larger than available unlabeled data {len(al_manager.unlabeled_data)}")
-            # Adjust batch size automatically
+
             batch_size = len(al_manager.unlabeled_data)
             print(f"Adjusted batch size to {batch_size}")
         
-        # Get strategy with fallbacks
-        strategy = "least_confidence"  # Default strategy
+        strategy = "least_confidence"
         try:
             config_strategy = automated_trainer.training_config.get('sampling_strategy')
             if config_strategy is not None and isinstance(config_strategy, str):
@@ -3522,15 +3411,13 @@ async def get_next_batch():
         try:
             batch = al_manager.get_next_batch(strategy=strategy, batch_size=batch_size)
             
-            # Store batch information
             try:
                 automated_trainer.current_batch = batch
                 automated_trainer.current_batch_size = len(batch)
                 automated_trainer.current_batch_labeled_count = 0
             except Exception as config_error:
                 print(f"Error updating trainer state: {str(config_error)}")
-                # Continue even if we can't update the automated trainer state
-            
+
             print(f"Successfully got batch of {len(batch)} images")
             
             return {
@@ -3540,14 +3427,12 @@ async def get_next_batch():
             }
         except Exception as e:
             print(f"Error getting batch: {str(e)}")
-            traceback.print_exc()  # Print full stack trace
+            traceback.print_exc()
             
-            # Try again with random strategy as fallback
             try:
                 print("Trying fallback random sampling strategy")
                 batch = al_manager.get_next_batch(strategy="random", batch_size=batch_size)
                 
-                # Store batch information
                 try:
                     automated_trainer.current_batch = batch
                     automated_trainer.current_batch_size = len(batch)
@@ -3587,13 +3472,11 @@ async def save_checkpoint():
         if not al_manager.output_dir:
             raise HTTPException(status_code=400, detail="No output directory set")
             
-        # Initialize checkpoint manager if it doesn't exist
         if not hasattr(al_manager, 'checkpoint_manager') or al_manager.checkpoint_manager is None:
             al_manager.checkpoint_manager = CheckpointManager(al_manager.output_dir)
             
-        # Create the state to save with CURRENT episode (don't increment)
         state = {
-            'episode': al_manager.episode,  # Current episode, not incremented
+            'episode': al_manager.episode,
             'model_state': al_manager.model.state_dict(),
             'best_val_acc': al_manager.best_val_acc,
             'training_config': getattr(automated_trainer, 'training_config', {}),
@@ -3613,7 +3496,6 @@ async def save_checkpoint():
             'episode_history': al_manager.episode_history
         }
         
-        # Add optimizer and scheduler states safely
         if hasattr(al_manager, 'optimizer') and al_manager.optimizer:
             try:
                 state['optimizer_state'] = al_manager.optimizer.state_dict()
@@ -3653,7 +3535,7 @@ async def save_checkpoint():
 async def load_checkpoint(request: Request):
     """Load model checkpoint with proper request handling"""
     try:
-        # Parse the request body
+
         try:
             body = await request.json()
             checkpoint_path = body.get('checkpoint_path')
@@ -3663,25 +3545,35 @@ async def load_checkpoint(request: Request):
         if not checkpoint_path:
             raise HTTPException(status_code=422, detail="checkpoint_path is required")
         
-        if not al_manager.model:
-            raise HTTPException(status_code=400, detail="No model initialized")
-            
         if not al_manager.output_dir:
             raise HTTPException(status_code=400, detail="No output directory set")
             
-        # Initialize checkpoint manager if it doesn't exist
         if not hasattr(al_manager, 'checkpoint_manager') or al_manager.checkpoint_manager is None:
             al_manager.checkpoint_manager = CheckpointManager(al_manager.output_dir)
             
-        # Construct full checkpoint path
         full_checkpoint_path = os.path.join(al_manager.checkpoint_manager.checkpoint_dir, checkpoint_path)
         
         if not os.path.exists(full_checkpoint_path):
             raise HTTPException(status_code=404, detail=f"Checkpoint not found: {checkpoint_path}")
+
+        if not al_manager.model:
+            print("No model initialized — loading config from checkpoint to auto-initialize...")
+            try:
+                raw = torch.load(full_checkpoint_path, map_location=torch.device('cpu'), weights_only=False)
+                saved_config = raw.get('training_config', {})
+                model_name = saved_config.get('model_type', 'resnet18')
+                num_classes = saved_config.get('num_classes', 2)
+                project_name = saved_config.get('project_name', 'restored_project')
+                print(f"Auto-initializing: model={model_name}, num_classes={num_classes}")
+                al_manager.initialize_project(project_name, model_name, num_classes)
+            except Exception as init_err:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No model initialized and could not auto-initialize from checkpoint: {str(init_err)}"
+                )
         
         print(f"Loading checkpoint from: {full_checkpoint_path}")
         
-        # Load the checkpoint
         checkpoint = al_manager.checkpoint_manager.load_checkpoint(
             al_manager.model, 
             getattr(al_manager, 'optimizer', None),
@@ -3690,23 +3582,18 @@ async def load_checkpoint(request: Request):
         )
         
         if checkpoint:
-            # Restore training state
             al_manager.episode = checkpoint.get('episode', 0)
             al_manager.best_val_acc = checkpoint.get('best_val_acc', 0)
             
-            # Restore metrics
             metrics = checkpoint.get('metrics', {})
             al_manager.plot_episode_xvalues = metrics.get('episode_accuracies', {}).get('x', [])
             al_manager.plot_episode_yvalues = metrics.get('episode_accuracies', {}).get('y', [])
             al_manager.plot_epoch_xvalues = metrics.get('epoch_losses', {}).get('x', [])
             al_manager.plot_epoch_yvalues = metrics.get('epoch_losses', {}).get('y', [])
             
-            # Restore episode history
             al_manager.episode_history = checkpoint.get('episode_history', [])
             
-            # Restore data indices if available
             if 'labeled_indices' in checkpoint:
-                # Note: We can't restore the actual data, but we can track the counts
                 labeled_count = len(checkpoint['labeled_indices'])
                 unlabeled_count = len(checkpoint['unlabeled_indices'])
                 validation_count = len(checkpoint['validation_indices'])
@@ -3719,7 +3606,7 @@ async def load_checkpoint(request: Request):
                 "message": f"Checkpoint {checkpoint_path} loaded successfully"
             }
         else:
-            raise HTTPException(status_code=500, detail="Failed to load checkpoint")
+            raise HTTPException(status_code=500, detail="Checkpoint file could not be loaded — check server logs for the exact error")
             
     except HTTPException:
         raise
@@ -3736,7 +3623,6 @@ async def list_checkpoints():
         if not al_manager.output_dir:
             return {"checkpoints": []}
             
-        # Initialize checkpoint manager if it doesn't exist
         if not hasattr(al_manager, 'checkpoint_manager') or al_manager.checkpoint_manager is None:
             al_manager.checkpoint_manager = CheckpointManager(al_manager.output_dir)
             
@@ -3769,8 +3655,8 @@ async def get_lr_scheduler_status():
     try:
         if al_manager.lr_scheduler is None:
             return {
-                "strategy": "plateau",  # default strategy
-                "current_lr": 0.001,    # default learning rate
+                "strategy": "plateau",
+                "current_lr": 0.001,
                 "history": [],
                 "initial_lr": 0.001
             }
@@ -3794,46 +3680,38 @@ async def import_pretrained_model(
     Import a pre-trained model that wasn't created with this UI
     """
     try:
-        # Read model file
+
         content = await uploaded_file.read()
         
-        # Validate model type - now including custom models
         supported_models = ["resnet18", "resnet50", "vision-transformer", "custom", "efficientnet", "densenet", "mobilenet"]
         
         if model_type not in supported_models:
-            # If not in our supported list, automatically assign to "custom"
+
             print(f"Model type '{model_type}' not in supported list, treating as 'custom'")
             model_type = "custom"
         
-        # Load model state
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
             tmp.write(content)
             tmp_path = tmp.name
         
-        # Use safe model loading
         state_dict = safe_load_model(tmp_path)
         
         if state_dict is None:
             os.unlink(tmp_path)
             raise ValueError("Failed to load model file. The file may be corrupted or in an unsupported format.")
         
-        # Extract the model state based on the structure
         model_state = extract_model_state(state_dict)
         
-        # For custom models, try to auto-detect the architecture and classes
         if model_type == "custom":
             print("Processing custom model...")
             
-            # Try to detect the model type and number of classes
             try:
                 detected_info = analyze_model_structure(state_dict)
                 print(f"Detected model info: {detected_info}")
                 
                 if detected_info["detected_type"] != "unknown":
                     print(f"Auto-detected model type: {detected_info['detected_type']}")
-                    # You could optionally override the model_type here
-                    # model_type = detected_info["detected_type"]
-                
+
                 if detected_info["num_classes"] and detected_info["num_classes"] != num_classes:
                     print(f"Auto-detected {detected_info['num_classes']} classes, updating from {num_classes}")
                     num_classes = detected_info["num_classes"]
@@ -3841,19 +3719,17 @@ async def import_pretrained_model(
             except Exception as detection_error:
                 print(f"Could not auto-detect model structure: {detection_error}")
         
-        # Initialize project with the detected/specified model type
         if not al_manager.project_name:
             init_result = al_manager.initialize_project(
                 project_name=project_name,
-                model_name=model_type,  # This can now be "custom"
+                model_name=model_type,
                 num_classes=num_classes
             )
         
-        # For custom models, use the enhanced loading method
         if model_type == "custom":
             success = al_manager.load_custom_model_weights(model_state, num_classes)
             if not success:
-                # Fallback to standard loading
+
                 try:
                     missing_keys, unexpected_keys = al_manager.model.load_state_dict(model_state, strict=False)
                     print(f"Loaded custom model with missing keys: {len(missing_keys)}, unexpected keys: {len(unexpected_keys)}")
@@ -3861,14 +3737,13 @@ async def import_pretrained_model(
                     print(f"Custom model loading failed: {load_error}")
                     raise ValueError(f"Failed to load custom model: {load_error}")
         else:
-            # Standard loading for known architectures
+
             try:
                 al_manager.model.load_state_dict(model_state, strict=False)
                 print("Loaded model state with non-strict matching")
             except Exception as e:
                 print(f"Standard loading error: {str(e)}")
                 
-                # Try key remapping for common patterns
                 fixed_state_dict = {}
                 for k, v in model_state.items():
                     if k.startswith('module.'):
@@ -3881,10 +3756,8 @@ async def import_pretrained_model(
                 missing_keys, unexpected_keys = al_manager.model.load_state_dict(fixed_state_dict, strict=False)
                 print(f"Loaded with key fixing. Missing: {len(missing_keys)}, Unexpected: {len(unexpected_keys)}")
         
-        # Clean up
         os.unlink(tmp_path)
         
-        # Get model info for response
         model_info = al_manager.get_model_info()
         
         return {
@@ -3913,7 +3786,7 @@ async def verify_custom_model(uploaded_file: UploadFile = File(...)):
             tmp_path = tmp.name
         
         try:
-            # Try to load and analyze the model
+
             state_dict = safe_load_model(tmp_path)
             
             if state_dict is None:
@@ -3924,7 +3797,6 @@ async def verify_custom_model(uploaded_file: UploadFile = File(...)):
                     "message": "Unable to load model file. File may be corrupted or in an unsupported format."
                 }
             
-            # Analyze the model structure
             model_info = analyze_model_structure(state_dict)
             
             os.unlink(tmp_path)
@@ -3957,31 +3829,29 @@ def extract_model_state(state_dict):
     Handles different model saving formats
     """
     if isinstance(state_dict, dict):
-        # Our export format
+
         if 'model_state' in state_dict:
             return state_dict['model_state']
-        # Common PyTorch checkpoint format
+
         elif 'state_dict' in state_dict:
             return state_dict['state_dict']
-        # Direct state dict from weights_only=True loading
+
         elif any(k.endswith('.weight') or k.endswith('.bias') for k in state_dict.keys()):
             return state_dict
-        # Models with 'model' key from HuggingFace or similar
+
         elif 'model' in state_dict and isinstance(state_dict['model'], dict):
             return state_dict['model']
-        # Torchvision model zoo style
+
         elif any(k.startswith('layer') or k.startswith('conv') or k.startswith('fc') 
                 or k.startswith('features') or k.startswith('classifier') for k in state_dict.keys()):
             return state_dict
     
-    # If the loaded object is a model itself (unlikely but possible)
     if hasattr(state_dict, 'state_dict') and callable(getattr(state_dict, 'state_dict')):
         try:
             return state_dict.state_dict()
         except:
             pass
     
-    # Default: return as-is and hope for the best
     return state_dict
 
 def analyze_model_structure(state_dict):
@@ -3997,34 +3867,28 @@ def analyze_model_structure(state_dict):
     }
     
     try:
-        # Extract model state
+
         model_state = extract_model_state(state_dict)
         
         if not model_state or not isinstance(model_state, dict):
             result["message"] = "Unable to extract model state dictionary. Invalid format."
             return result
             
-        # Print some keys for debugging
         print(f"Keys in model state: {list(model_state.keys())[:10]}...")
         
-        # Check model type by examining keys
         key_set = set([k.split('.')[0] for k in model_state.keys()])
         
-        # Detect Vision Transformer (ViT) models like RETFound
         if any(k in ['cls_token', 'pos_embed', 'patch_embed'] for k in key_set):
             result["detected_type"] = "vision-transformer"
             
-            # For ViT models like RETFound, look for the head layer
             head_keys = [k for k in model_state.keys() if 'head' in k.lower() and 'weight' in k]
             if head_keys:
                 head_key = head_keys[0]
                 head_shape = model_state[head_key].shape
                 print(f"Found ViT head layer: {head_key} with shape: {head_shape}")
                 
-                # For RETFound and similar models, the head might be for feature extraction
-                # We should NOT use the original head size if it's 512 (feature dimension)
                 if head_shape[0] == 512 or head_shape[0] > 100:
-                    result["num_classes"] = None  # Don't auto-set large feature dimensions
+                    result["num_classes"] = None
                     result["message"] = f"Detected Vision Transformer (likely RETFound). Original head has {head_shape[0]} outputs (likely features). You can specify your desired number of classes."
                 else:
                     result["num_classes"] = head_shape[0]
@@ -4032,10 +3896,9 @@ def analyze_model_structure(state_dict):
             else:
                 result["message"] = "Detected Vision Transformer. No classification head found - will add custom head."
                 
-        # Detect ResNet models
         elif any(k.startswith('layer') for k in model_state.keys()):
             result["detected_type"] = "resnet"
-            # Look for fc layer
+
             if 'fc.weight' in model_state:
                 fc_shape = model_state['fc.weight'].shape
                 result["num_classes"] = fc_shape[0]
@@ -4043,7 +3906,6 @@ def analyze_model_structure(state_dict):
             else:
                 result["message"] = "Detected ResNet architecture."
                 
-        # Other model types...
         elif 'features' in key_set and 'classifier' in key_set:
             result["detected_type"] = "vgg-style"
         elif 'blocks' in key_set:
@@ -4051,7 +3913,6 @@ def analyze_model_structure(state_dict):
         else:
             result["detected_type"] = "custom"
         
-        # Model is compatible if it has weights
         result["compatible"] = any(k.endswith('.weight') for k in model_state.keys())
         result["adaptation_needed"] = True
         
@@ -4069,17 +3930,16 @@ def detect_num_classes(state_dict):
     Try to detect number of classes from model state dict
     Handles different naming conventions for final layer
     """
-    # Common patterns for output layer names in different architectures
+
     output_patterns = [
-        # CNN models
+
         'fc.weight', 'classifier.weight', 'head.weight', 'output.weight',
-        # For ViT and transformer models
+
         'head.weight', 'mlp_head.fc2.weight', 'cls_head.weight', 'classifier.weight',
-        # For detection models
+
         'roi_heads.box_predictor.cls_score.weight', 'bbox_pred.weight'
     ]
     
-    # Look for known output layer patterns
     for pattern in output_patterns:
         matching_keys = [k for k in state_dict.keys() if k.endswith(pattern)]
         if matching_keys:
@@ -4087,52 +3947,47 @@ def detect_num_classes(state_dict):
             try:
                 shape = state_dict[key].shape
                 
-                if len(shape) == 2:  # Linear layer weights are 2D [out_features, in_features]
+                if len(shape) == 2:
                     out_features = shape[0]
                     return out_features
-                elif len(shape) == 1:  # Sometimes weights can be flattened
+                elif len(shape) == 1:
                     return shape[0]
             except:
                 continue
     
-    # If no exact match, try a more flexible approach for the last layer
     try:
-        # Find all weight parameters
+
         weight_keys = [k for k in state_dict.keys() if k.endswith('.weight')]
         
-        # Look for likely classifier layers
         classifier_patterns = ['fc', 'classifier', 'head', 'output', 'linear', 'pred']
         for pattern in classifier_patterns:
             candidates = [k for k in weight_keys if pattern in k.lower()]
             if candidates:
-                # Take the key with the highest index if it has numeric suffixes
-                key = candidates[-1]  # Default to last one
+
+                key = candidates[-1]
                 shape = state_dict[key].shape
                 
-                if len(shape) == 2:  # Linear layer
+                if len(shape) == 2:
                     return shape[0]
-                elif len(shape) == 1:  # Flattened weights
+                elif len(shape) == 1:
                     return shape[0]
     except Exception as e:
         print(f"Error in flexible class detection: {e}")
     
-    # Special handling for ViT models
     if 'patch_embed.proj.weight' in state_dict:
-        # Try to find other clues in the architecture
+
         try:
-            # Check if this is a MAE model (self-supervised pre-training)
+
             if 'decoder_pred.weight' in state_dict:
                 shape = state_dict['decoder_pred.weight'].shape
                 return shape[0]
             
-            # Check for full ViT with a classification head
             if 'head.weight' in state_dict:
                 shape = state_dict['head.weight'].shape
                 return shape[0]
         except:
             pass
     
-    # If we can't determine, return None
     return None
 
 @app.post("/upload-csv-paths")
@@ -4146,25 +4001,21 @@ async def upload_csv_paths(
     Process a CSV file with image paths and load the images
     """
     try:
-        # Read CSV content
+
         content = await csv_file.read()
-        text_content = content.decode('utf-8', errors='replace')  # Handle encoding issues
+        text_content = content.decode('utf-8', errors='replace')
         
         print(f"Using delimiter: '{delimiter}'")
         
-        # Handle special characters
         if delimiter == "\\t" or delimiter == "tab":
             delimiter = "\t"
         
-        # Parse CSV
         import csv
         from io import StringIO
         
-        # Try to detect if our delimiter guess is wrong
         first_line = text_content.split('\n')[0]
         common_delimiters = [',', '\t', ';', '|']
         
-        # If our delimiter doesn't appear in the first line but others do, we might have guessed wrong
         if delimiter not in first_line:
             for alt_delimiter in common_delimiters:
                 if alt_delimiter in first_line:
@@ -4177,9 +4028,8 @@ async def upload_csv_paths(
             csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
             fieldnames = csv_reader.fieldnames
             
-            # Check for file_path column
             if not fieldnames or 'file_path' not in fieldnames:
-                # Try other common column names
+
                 possible_column_names = ['file_path', 'filepath', 'path', 'filename', 'image', 'imagepath', 'file', 'image_path']
                 
                 found_column = None
@@ -4196,17 +4046,16 @@ async def upload_csv_paths(
                         if row[found_column]:
                             file_paths.append(row[found_column].strip())
                 else:
-                    # If we can't find a column header, try using the first column
+
                     print("No 'file_path' column found. Trying first column...")
                     
-                    # Reset and parse as simple CSV without headers
                     csv_reader = csv.reader(StringIO(text_content), delimiter=delimiter)
                     file_paths = []
                     for row in csv_reader:
                         if row and row[0].strip():
                             file_paths.append(row[0].strip())
             else:
-                # Standard case - 'file_path' column exists
+
                 file_paths = []
                 for row in csv_reader:
                     if row['file_path'] and row['file_path'].strip():
@@ -4214,7 +4063,6 @@ async def upload_csv_paths(
         except Exception as parse_error:
             print(f"Error parsing CSV with delimiter '{delimiter}': {parse_error}")
             
-            # Last resort - try splitting the content by each line and assuming one path per line
             file_paths = []
             for line in text_content.split('\n'):
                 line = line.strip()
@@ -4226,24 +4074,21 @@ async def upload_csv_paths(
         
         print(f"Found {len(file_paths)} image paths in file. First few: {file_paths[:5]}")
         
-        # Load images from paths
         loaded_images = []
         for path in file_paths:
             try:
-                # Check if path is absolute or relative
+
                 if not os.path.isabs(path):
-                    # Try relative to current directory
+
                     path = os.path.join(os.getcwd(), path)
                 
                 if not os.path.exists(path):
                     print(f"Warning: File not found: {path}")
                     continue
                 
-                # Load image
                 img = Image.open(path).convert('RGB')
                 img_tensor = al_manager.transform(img)
                 
-                # Add to unlabeled data
                 img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
                 al_manager.unlabeled_data[img_id] = img_tensor
                 loaded_images.append(img_id)
@@ -4255,18 +4100,15 @@ async def upload_csv_paths(
         if not loaded_images:
             raise HTTPException(status_code=400, detail="Failed to load any valid images from the provided paths")
         
-        # Process the loaded images similarly to add_initial_data
         total_images = len(loaded_images)
         val_size = int(total_images * val_split)
         initial_labeled_size = int((total_images - val_size) * initial_labeled_ratio)
         
-        # Shuffle and split
         np.random.shuffle(loaded_images)
         val_indices = loaded_images[:val_size]
         initial_labeled_indices = loaded_images[val_size:val_size + initial_labeled_size]
         unlabeled_indices = loaded_images[val_size + initial_labeled_size:]
         
-        # Move images to appropriate sets
         for idx in val_indices:
             if idx in al_manager.unlabeled_data:
                 img_tensor = al_manager.unlabeled_data.pop(idx)
@@ -4275,7 +4117,7 @@ async def upload_csv_paths(
         for idx in initial_labeled_indices:
             if idx in al_manager.unlabeled_data:
                 img_tensor = al_manager.unlabeled_data.pop(idx)
-                al_manager.labeled_data[idx] = (img_tensor, None)  # These will need manual labeling
+                al_manager.labeled_data[idx] = (img_tensor, None)
         
         split_info = {
             "total_images": total_images,
@@ -4302,12 +4144,10 @@ def create_consistent_label_mapping(csv_content, label_column, delimiter, predef
     import csv
     from io import StringIO
     
-    # If we have predefined labels (from frontend), use their order
     if predefined_labels:
         label_to_index = {label: idx for idx, label in enumerate(predefined_labels)}
         return label_to_index
     
-    # Otherwise, collect all unique labels from CSV and sort them
     csv_reader = csv.DictReader(StringIO(csv_content), delimiter=delimiter)
     unique_labels = set()
     
@@ -4316,25 +4156,23 @@ def create_consistent_label_mapping(csv_content, label_column, delimiter, predef
         if label_str:
             unique_labels.add(label_str)
     
-    # Sort labels alphabetically for consistency (AMD comes before DR)
     sorted_labels = sorted(list(unique_labels))
     label_to_index = {label: idx for idx, label in enumerate(sorted_labels)}
     
     return label_to_index
-
 
 @app.post("/upload-combined-with-labels")
 async def upload_combined_with_labels(
     files: List[UploadFile],
     val_split: float = Form(0.2),
     initial_labeled_ratio: float = Form(0.4),
-    label_column: str = Form("label") # Default label column name
+    label_column: str = Form("label")
 ):
     """
     Process a combined upload of a CSV file with both file paths and class labels, plus image files
     """
     try:
-        # Separate CSV and image files
+
         csv_files = [f for f in files if f.filename.endswith(('.csv', '.tsv', '.txt'))]
         image_files = [f for f in files if f.content_type and f.content_type.startswith('image/')]
         
@@ -4344,48 +4182,40 @@ async def upload_combined_with_labels(
         if not image_files:
             raise HTTPException(status_code=400, detail="No image files found in upload")
         
-        # Read the CSV file
         csv_file = csv_files[0]
         csv_content = await csv_file.read()
         csv_text = csv_content.decode('utf-8', errors='replace')
         
-        # Parse CSV to get file paths and labels
         import csv
         from io import StringIO
         
-        # Try to identify the delimiter
         first_line = csv_text.split('\n')[0]
-        delimiter = ',' # default
+        delimiter = ','
         for potential_delimiter in [',', '\t', ';', '|']:
             if potential_delimiter in first_line:
                 delimiter = potential_delimiter
                 break
         
-        # Create a dictionary of image filename to file data
         image_map = {}
         for img_file in image_files:
-            # Store by full name and by name without path
+
             image_map[img_file.filename] = img_file
             base_name = os.path.basename(img_file.filename)
             image_map[base_name] = img_file
         
-        # First pass: identify the file path and label columns
         csv_reader = csv.DictReader(StringIO(csv_text), delimiter=delimiter)
         file_path_column = None
-        label_column_name = label_column  # Start with the provided label column
+        label_column_name = label_column
         
-        # Common column names for file paths
         path_column_names = ['file_path', 'filepath', 'path', 'filename', 'image', 'file']
-        # Common column names for labels
+
         label_column_names = ['label', 'class', 'category', 'target', 'y', 'classification']
         
-        # Identify the file path column
         for field in csv_reader.fieldnames:
             if field.lower() in path_column_names:
                 file_path_column = field
                 break
         
-        # If no label column name was provided or found, try to identify it
         if label_column_name not in csv_reader.fieldnames:
             for field in csv_reader.fieldnames:
                 if field.lower() in label_column_names:
@@ -4402,53 +4232,43 @@ async def upload_combined_with_labels(
             has_labels = True
             print(f"Found label column: {label_column_name}")
         
-        # Restart the reader
         csv_reader = csv.DictReader(StringIO(csv_text), delimiter=delimiter)
         
-        # Process each row and match with images
-        labeled_images = []  # Images with labels from CSV
-        unlabeled_images = []  # Images without labels
-        label_to_index = {}  # Map string labels to numeric indices
+        labeled_images = []
+        unlabeled_images = []
+        label_to_index = {}
 
-        
-
-        
         for row in csv_reader:
             path = row.get(file_path_column, "").strip()
             if not path:
                 continue
                 
-            # Extract the filename from the path
             filename = os.path.basename(path)
             
-            # Look up the image in our map
             if filename in image_map:
                 img_file = image_map[filename]
-                content = await img_file.read()  # Read the content of the file
+                content = await img_file.read()
                 
                 try:
-                    # Convert to PIL Image and then to tensor
+
                     img = Image.open(io.BytesIO(content)).convert('RGB')
                     img_tensor = al_manager.transform(img)
                     
-                    # Generate a unique image ID
                     img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
 
-                    # Check if this image has a label
                     if has_labels:
                         label_str = row.get(label_column_name, "").strip()
                         if label_str:
-                            # Convert string label to numeric index if we haven't seen it before
+
                             if label_str not in label_to_index:
                                 label_to_index[label_str] = len(label_to_index)
                             
                             label_idx = label_to_index[label_str]
-                            # Add to labeled data
+
                             al_manager.labeled_data[img_id] = (img_tensor, label_idx)
                             labeled_images.append(img_id)
                             continue
                     
-                    # If we get here, the image is unlabeled
                     al_manager.unlabeled_data[img_id] = img_tensor
                     unlabeled_images.append(img_id)
                     
@@ -4462,18 +4282,15 @@ async def upload_combined_with_labels(
         print(f"Processed {len(labeled_images)} labeled images and {len(unlabeled_images)} unlabeled images")
         print(f"Label mapping: {label_to_index}")
         
-        # Take some unlabeled images for validation
         val_size = int(len(unlabeled_images) * val_split)
         val_indices = unlabeled_images[:val_size]
         remaining_unlabeled = unlabeled_images[val_size:]
         
-        # Move validation images to validation set
         for idx in val_indices:
             if idx in al_manager.unlabeled_data:
                 img_tensor = al_manager.unlabeled_data.pop(idx)
                 al_manager.validation_data[idx] = (img_tensor, None)
         
-        # Return the label mapping for future reference
         return {
             "status": "success",
             "message": f"Successfully processed images with labels from CSV",
@@ -4497,33 +4314,28 @@ async def debug_csv_file(csv_file: UploadFile = File(...)):
     Debug CSV file to examine the paths and content
     """
     try:
-        # Read CSV content
+
         content = await csv_file.read()
         text_content = content.decode('utf-8', errors='replace')
         
-        # Parse CSV
         import csv
         from io import StringIO
         
-        # Try comma as default delimiter
         delimiter = ','
-        if '\t' in text_content[:1000]:  # Check first 1000 chars for tabs
+        if '\t' in text_content[:1000]:
             delimiter = '\t'
         
         csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
         
-        # Get sample rows and column names
         sample_rows = []
         for i, row in enumerate(csv_reader):
-            if i < 5:  # Get first 5 rows
+            if i < 5:
                 sample_rows.append(dict(row))
             else:
                 break
                 
-        # Check if there's a file_path and annotation column
         columns = csv_reader.fieldnames if csv_reader.fieldnames else []
         
-        # Add current directory info
         cwd = os.getcwd()
         search_dirs = [
             cwd,
@@ -4556,14 +4368,13 @@ async def upload_csv_paths_with_labels(
     Process a CSV file with both image paths and labels with consistent label mapping
     """
     try:
-        # Validate inputs
+
         print(f"Received request:")
         print(f"  File: {csv_file.filename}")
         print(f"  Label column: {label_column}")
         print(f"  Delimiter: {delimiter}")
         print(f"  Expected label mapping: {expected_label_mapping}")
         
-        # Parse expected label mapping if provided
         label_to_index = {}
         if expected_label_mapping and expected_label_mapping.strip():
             try:
@@ -4574,11 +4385,9 @@ async def upload_csv_paths_with_labels(
                 print(f"Error parsing expected label mapping: {e}")
                 label_to_index = {}
         
-        # Validate file
         if not csv_file or not csv_file.filename:
             raise HTTPException(status_code=400, detail="No CSV file provided")
             
-        # Read CSV content
         try:
             content = await csv_file.read()
             if not content:
@@ -4591,13 +4400,8 @@ async def upload_csv_paths_with_labels(
             print(f"Error reading CSV file: {str(read_error)}")
             raise HTTPException(status_code=400, detail=f"Error reading CSV file: {str(read_error)}")
         
-        # Handle special delimiter characters
         if delimiter == "\\t" or delimiter.lower() == "tab":
             delimiter = "\t"
-        
-        # Parse CSV
-        import csv
-        from io import StringIO
         
         try:
             csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
@@ -4612,7 +4416,6 @@ async def upload_csv_paths_with_labels(
             print(f"Error parsing CSV: {str(csv_error)}")
             raise HTTPException(status_code=400, detail=f"Error parsing CSV with delimiter '{delimiter}': {str(csv_error)}")
         
-        # Find file path column
         file_path_column = None
         path_column_names = ['file_path', 'filepath', 'path', 'filename', 'image', 'file', 'image_path']
         
@@ -4631,9 +4434,8 @@ async def upload_csv_paths_with_labels(
                 detail=f"Could not identify file path column. Available columns: {fieldnames}"
             )
         
-        # Find label column
         if label_column not in fieldnames:
-            # Try common label column names
+
             label_alternatives = ['annotation', 'label', 'class', 'category', 'target', 'classification', 'diagnosis']
             found_alternative = None
             
@@ -4657,7 +4459,6 @@ async def upload_csv_paths_with_labels(
         print(f"Using file path column: '{file_path_column}'")
         print(f"Using label column: '{label_column}'")
         
-        # If no expected mapping provided, create one by scanning all labels first
         if not label_to_index:
             print("No expected mapping provided. Scanning CSV for all labels...")
             csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
@@ -4668,12 +4469,10 @@ async def upload_csv_paths_with_labels(
                 if label_str:
                     unique_labels.add(label_str)
             
-            # Create mapping with alphabetical order
             sorted_labels = sorted(list(unique_labels))
             label_to_index = {label: idx for idx, label in enumerate(sorted_labels)}
             print(f"Created alphabetical label mapping: {label_to_index}")
         
-        # Process the CSV data
         csv_reader = csv.DictReader(StringIO(text_content), delimiter=delimiter)
         
         labeled_images = []
@@ -4689,17 +4488,15 @@ async def upload_csv_paths_with_labels(
             if not file_path:
                 continue
                 
-            # Get label if it exists
             label_str = row.get(label_column, "").strip() if label_column in row else None
             found_path = None
             
-            # 1. If it's an absolute path and exists, use it immediately
             if os.path.isabs(file_path) and os.path.exists(file_path):
                 found_path = file_path
-                if row_index < 3:  # Only print first few for debugging
+                if row_index < 3:
                     print(f"✓ Using absolute path: {file_path}")
             else:
-                # 2. Only search directories if absolute path didn't work
+
                 filename = os.path.basename(file_path)
                 
                 cwd = os.getcwd()
@@ -4711,7 +4508,6 @@ async def upload_csv_paths_with_labels(
                     os.path.join(cwd, 'static'),
                 ]
                 
-                # Try filename in search directories
                 for search_dir in search_dirs:
                     test_path = os.path.join(search_dir, filename)
                     if os.path.exists(test_path):
@@ -4720,7 +4516,6 @@ async def upload_csv_paths_with_labels(
                             print(f"✓ Found by filename in: {test_path}")
                         break
                 
-                # Try relative path from CSV in search directories
                 if not found_path:
                     for search_dir in search_dirs:
                         test_path = os.path.join(search_dir, file_path)
@@ -4732,42 +4527,42 @@ async def upload_csv_paths_with_labels(
             
             if not found_path:
                 failed_paths.append(file_path)
-                if len(failed_paths) <= 3:  # Only print first few failures
+                if len(failed_paths) <= 3:
                     print(f"✗ Could not find: {file_path}")
                 continue
             
-            # Load the image
             try:
                 img = Image.open(found_path).convert('RGB')
                 img_tensor = al_manager.transform(img)
                 
-                # Generate unique image ID
                 img_id = len(al_manager.unlabeled_data) + len(al_manager.labeled_data) + len(al_manager.validation_data)
                 
-                # Store the original path
                 al_manager.image_paths[img_id] = found_path
                 
-                # Process based on whether we have a label
                 if label_str:
                     label_idx = None
                     
                     try:
                         numeric_label = int(label_str)
-                        # Check if this numeric value exists as an index in our mapping
+
                         if numeric_label in label_to_index.values():
                             label_idx = numeric_label
                             if row_index < 3:
                                 print(f"Using numeric label directly: {numeric_label}")
                         else:
-                            # Numeric label but not in our range - treat as string
+
                             if label_str in label_to_index:
                                 label_idx = label_to_index[label_str]
                     except ValueError:
-                        # Not a number, treat as string label
+
                         if label_str in label_to_index:
                             label_idx = label_to_index[label_str]
                     
                     if label_idx is not None:
+                        al_manager.ground_truth_labels[img_id] = {
+                            "label_idx": label_idx,
+                            "label_name": label_str,
+                        }
                         al_manager.labeled_data[img_id] = (img_tensor, label_idx)
                         labeled_images.append(img_id)
                         if row_index < 3:
@@ -4793,22 +4588,32 @@ async def upload_csv_paths_with_labels(
                 detail=f"Could not process any images. Failed paths: {failed_paths[:5]}"
             )
         
-        # Handle validation set
+        if len(labeled_images) > 0 and initial_labeled_ratio < 1.0:
+            random.shuffle(labeled_images)
+            keep_labeled = max(1, int(len(labeled_images) * initial_labeled_ratio))
+            move_to_unlabeled = labeled_images[keep_labeled:]
+            labeled_images = labeled_images[:keep_labeled]
+
+            for idx in move_to_unlabeled:
+                if idx in al_manager.labeled_data:
+                    img_tensor, _ = al_manager.labeled_data.pop(idx)
+                    al_manager.unlabeled_data[idx] = img_tensor
+                    unlabeled_images.append(idx)
+
+            print(f"initial_labeled_ratio={initial_labeled_ratio}: kept {len(labeled_images)} labeled, "
+                  f"moved {len(move_to_unlabeled)} to unlabeled pool (ground truth retained)")
+        
         if len(labeled_images) > 0:
             val_size = int(len(labeled_images) * val_split)
             if val_size > 0:
                 val_indices = labeled_images[:val_size]
-                remaining_labeled = labeled_images[val_size:]
-                
+                labeled_images = labeled_images[val_size:]
                 for idx in val_indices:
                     if idx in al_manager.labeled_data:
                         img_tensor, label = al_manager.labeled_data.pop(idx)
                         al_manager.validation_data[idx] = (img_tensor, label)
-                
-                labeled_images = remaining_labeled
                 print(f"Moved {len(val_indices)} labeled images to validation set WITH labels")
-        
-        # Handle unlabeled images for validation if needed
+
         val_size_unlabeled = int(len(unlabeled_images) * val_split)
         val_indices_unlabeled = unlabeled_images[:val_size_unlabeled] if val_size_unlabeled > 0 else []
         remaining_unlabeled = unlabeled_images[val_size_unlabeled:] if val_size_unlabeled > 0 else unlabeled_images
@@ -4816,7 +4621,9 @@ async def upload_csv_paths_with_labels(
         for idx in val_indices_unlabeled:
             if idx in al_manager.unlabeled_data:
                 img_tensor = al_manager.unlabeled_data.pop(idx)
-                al_manager.validation_data[idx] = (img_tensor, None)
+                ground_truth = al_manager.ground_truth_labels.get(idx)
+                label = ground_truth["label_idx"] if ground_truth else None
+                al_manager.validation_data[idx] = (img_tensor, label)
         
         print(f"Final label mapping used: {label_to_index}")
         print(f"Processing complete: {len(labeled_images)} labeled, {len(remaining_unlabeled)} unlabeled, {len(al_manager.validation_data)} validation")
@@ -4851,14 +4658,11 @@ async def recover_batch(request: BatchRequest):
         print("\n=== EMERGENCY BATCH RECOVERY ===")
         print(f"Using strategy: {request.strategy}, batch size: {request.batch_size}")
         
-        # Make sure we have unlabeled data
         if len(al_manager.unlabeled_data) == 0:
             raise HTTPException(status_code=400, detail="No unlabeled data available")
             
-        # Use a limited batch size for safety
         batch_size = min(request.batch_size, len(al_manager.unlabeled_data))
         
-        # Simple random sampling directly
         image_ids = list(al_manager.unlabeled_data.keys())
         selected_ids = random.sample(image_ids, batch_size)
         
@@ -4866,7 +4670,7 @@ async def recover_batch(request: BatchRequest):
         for img_id in selected_ids:
             selected_samples.append({
                 "image_id": img_id,
-                "uncertainty": 0.5,  # Default uncertainty
+                "uncertainty": 0.5,
                 "predictions": [{"label": "Unknown", "confidence": 0.0}]
             })
         
@@ -4884,28 +4688,25 @@ async def recover_batch(request: BatchRequest):
 async def import_project(uploaded_file: UploadFile = File(...)):
     """Import a complete project from ZIP file and prepare for continuation"""
     try:
-        # Read ZIP file
+
         content = await uploaded_file.read()
         
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Save ZIP file temporarily
+
             zip_path = os.path.join(temp_dir, "imported_project.zip")
             with open(zip_path, "wb") as f:
                 f.write(content)
             
-            # Extract ZIP file
             extract_dir = os.path.join(temp_dir, "extracted")
             with zipfile.ZipFile(zip_path, 'r') as zipf:
                 zipf.extractall(extract_dir)
             
-            # Find the project files
             project_files = {}
             for root, dirs, files in os.walk(extract_dir):
                 for file in files:
                     if file in ['model.pt', 'annotations.csv', 'metadata.json']:
                         project_files[file] = os.path.join(root, file)
             
-            # Validate required files
             required_files = ['model.pt', 'metadata.json']
             missing_files = [f for f in required_files if f not in project_files]
             if missing_files:
@@ -4914,7 +4715,6 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                     detail=f"Missing required files: {missing_files}"
                 )
             
-            # Load metadata
             with open(project_files['metadata.json'], 'r') as f:
                 metadata = json.load(f)
             
@@ -4924,14 +4724,12 @@ async def import_project(uploaded_file: UploadFile = File(...)):
             training_metrics = metadata['training_metrics']
             labels_info = metadata.get('labels', {})
             
-            # Get model type information with better handling
             model_type = project_info.get('model_type', 'resnet50')
             is_vit = project_info.get('is_vision_transformer', False)
             model_class = project_info.get('model_class', '')
             
             print(f"Importing project with model_type: {model_type}, is_vit: {is_vit}, class: {model_class}")
             
-            # Load model data
             if torch.cuda.is_available():
                 model_data = torch.load(project_files['model.pt'])
             else:
@@ -4940,23 +4738,20 @@ async def import_project(uploaded_file: UploadFile = File(...)):
             model_config = model_data['model_config']
             model_state = model_data['model_state']
             
-            # Additional check for ViT from model state if metadata doesn't have it
             if not is_vit and model_type not in ['vision-transformer', 'custom']:
-                # Check model state for ViT indicators
+
                 vit_indicators = ['cls_token', 'pos_embed', 'patch_embed']
                 if any(key in model_state.keys() for key in vit_indicators):
                     print("Detected ViT model from state dict")
                     is_vit = True
                     model_type = 'vision-transformer'
             
-            # Determine number of classes from model structure
             num_classes = determine_num_classes_from_state(model_state)
             if not num_classes:
                 num_classes = project_info.get('num_classes', 2)
             
             print(f"Detected {num_classes} classes from model structure")
             
-            # Initialize project with imported settings
             al_manager.project_name = project_info['project_name']
             imported_episode = project_info['current_episode']
             al_manager.episode = imported_episode + 1
@@ -4965,13 +4760,11 @@ async def import_project(uploaded_file: UploadFile = File(...)):
 
             al_manager.best_val_acc = project_info['best_validation_accuracy']
             
-            # Update config
             al_manager.config.update({
                 'val_split': hyperparameters.get('validation_split', 0.2),
                 'initial_labeled_ratio': hyperparameters.get('initial_labeled_ratio', 0.1),
             })
             
-            # Initialize the correct model type based on what was saved
             if is_vit or model_type == 'vision-transformer':
                 print("Initializing Vision Transformer model")
                 init_result = al_manager.initialize_project(
@@ -4982,14 +4775,13 @@ async def import_project(uploaded_file: UploadFile = File(...)):
             else:
                 print(f"Initializing {model_type} model")
                 
-                # Map model type names for ResNet variants
                 if 'resnet' in model_type.lower():
                     if '18' in model_type:
                         model_name = 'resnet18'
                     else:
                         model_name = 'resnet50'
                 else:
-                    model_name = 'resnet50'  # Default fallback
+                    model_name = 'resnet50'
                 
                 init_result = al_manager.initialize_project(
                     project_name=al_manager.project_name,
@@ -4997,7 +4789,6 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                     num_classes=num_classes
                 )
             
-            # Load model weights with structure adaptation
             try:
                 al_manager.model.load_state_dict(model_state, strict=True)
                 print("Model loaded with strict=True")
@@ -5005,7 +4796,6 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                 print(f"Strict loading failed: {e}")
                 print("Attempting to adapt model structure...")
                 
-                # Try to adapt the model state dict
                 adapted_state = adapt_model_state_dict(model_state, al_manager.model.state_dict())
                 missing_keys, unexpected_keys = al_manager.model.load_state_dict(adapted_state, strict=False)
                 
@@ -5016,14 +4806,12 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                 
                 print("Model loaded with adapted state dict")
             
-            # Restore training metrics
             al_manager.plot_episode_xvalues = training_metrics['episode_accuracies']['episodes']
             al_manager.plot_episode_yvalues = training_metrics['episode_accuracies']['accuracies']
             al_manager.plot_epoch_xvalues = training_metrics['epoch_losses']['epochs']
             al_manager.plot_epoch_yvalues = training_metrics['epoch_losses']['losses']
             al_manager.episode_history = training_metrics.get('episode_history', [])
             
-            # Update automated trainer config if it exists
             if 'automated_trainer' in globals():
                 automated_trainer.training_config.update({
                     'sampling_strategy': hyperparameters.get('sampling_strategy', 'least_confidence'),
@@ -5032,43 +4820,38 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                     'learning_rate': hyperparameters.get('learning_rate', 0.001)
                 })
             
-            # Clear existing data sets - we're starting fresh with new images
             al_manager.labeled_data.clear()
             al_manager.unlabeled_data.clear()
             al_manager.validation_data.clear()
             
-            # Initialize image_paths if it doesn't exist
             if not hasattr(al_manager, 'image_paths'):
                 al_manager.image_paths = {}
             else:
                 al_manager.image_paths.clear()
             
-            # Create output directory
             al_manager.output_dir = os.path.join("output", al_manager.project_name, 
                 datetime.now().strftime("%Y%m%d_%H%M%S"))
             os.makedirs(al_manager.output_dir, exist_ok=True)
             
-            # **NEW: Try to load existing annotations automatically**
             loaded_images_count = 0
             project_ready = False
             
             if 'annotations.csv' in project_files:
                 print("Found annotations.csv, attempting to load existing data...")
                 try:
-                    # Read the CSV file
+
                     import pandas as pd
                     df = pd.read_csv(project_files['annotations.csv'])
                     
                     print(f"Annotations CSV contains {len(df)} entries")
                     
-                    # Try different common directory locations for images
                     search_paths = [
-                        os.getcwd(),  # Current working directory
+                        os.getcwd(),
                         os.path.join(os.getcwd(), 'data'),
                         os.path.join(os.getcwd(), 'images'),
                         os.path.join(os.getcwd(), 'uploads'),
-                        extract_dir,  # Inside the extracted project
-                        os.path.dirname(project_files['annotations.csv'])  # Same dir as CSV
+                        extract_dir,
+                        os.path.dirname(project_files['annotations.csv'])
                     ]
                     
                     failed_paths = []
@@ -5080,16 +4863,14 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                             label_index = row['label_index'] if pd.notna(row['label_index']) else None
                             split_type = row['split']
                             
-                            # Try to find the image in various locations
                             image_found = False
                             actual_path = None
                             
-                            # First try the original path
                             if os.path.exists(original_path):
                                 actual_path = original_path
                                 image_found = True
                             else:
-                                # Try just the filename in various search paths
+
                                 filename = os.path.basename(original_path)
                                 for search_path in search_paths:
                                     candidate_path = os.path.join(search_path, filename)
@@ -5099,14 +4880,12 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                                         break
                             
                             if image_found:
-                                # Load the image
+
                                 img = Image.open(actual_path).convert('RGB')
                                 img_tensor = al_manager.transform(img)
                                 
-                                # Store the actual path we found
                                 al_manager.image_paths[image_id] = actual_path
                                 
-                                # Place in appropriate dataset
                                 if split_type == 'validation':
                                     al_manager.validation_data[image_id] = (img_tensor, int(label_index) if label_index is not None else None)
                                 elif label_index is not None:
@@ -5127,7 +4906,6 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                     if failed_paths:
                         print(f"Failed to load {len(failed_paths)} images. First few: {failed_paths[:5]}")
                     
-                    # Determine if project is ready
                     project_ready = loaded_images_count > 0
                     
                 except Exception as csv_error:
@@ -5135,10 +4913,8 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                     import traceback
                     traceback.print_exc()
             
-            # Store the correct model type for return
             final_model_type = 'vision-transformer' if is_vit else model_type
             
-            # Prepare the final message
             if project_ready:
                 message = f"Project '{al_manager.project_name}' ({final_model_type}) imported successfully with {loaded_images_count} existing images loaded. Project is ready for active learning!"
             else:
@@ -5148,7 +4924,7 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                 "status": "success",
                 "project_info": {
                     **project_info,
-                    "model_type": final_model_type,  # Return the correct model type
+                    "model_type": final_model_type,
                     "is_vision_transformer": is_vit,
                     "num_classes": num_classes
                 },
@@ -5163,7 +4939,7 @@ async def import_project(uploaded_file: UploadFile = File(...)):
                 "labels": labels_info,
                 "training_config": automated_trainer.training_config if 'automated_trainer' in globals() else {},
                 "model_ready": True,
-                "project_ready": project_ready,  # New flag
+                "project_ready": project_ready,
                 "images_loaded": loaded_images_count > 0,
                 "message": message
             }
@@ -5179,9 +4955,7 @@ async def import_project(uploaded_file: UploadFile = File(...)):
 def determine_num_classes_from_state(state_dict):
     """Determine number of classes from model state dict"""
     try:
-        # Check for different classifier layer structures
-        
-        # ResNet style fc layers
+
         if 'fc.weight' in state_dict:
             return state_dict['fc.weight'].shape[0]
         elif 'fc.1.weight' in state_dict:
@@ -5189,18 +4963,15 @@ def determine_num_classes_from_state(state_dict):
         elif 'fc.2.weight' in state_dict:
             return state_dict['fc.2.weight'].shape[0]
         
-        # ViT style classifiers
         elif 'classifier.weight' in state_dict:
             return state_dict['classifier.weight'].shape[0]
         elif 'head.weight' in state_dict:
             return state_dict['head.weight'].shape[0]
         
-        # Look for any layer with 'fc' in the name
         fc_keys = [k for k in state_dict.keys() if 'fc' in k and 'weight' in k]
         if fc_keys:
             return state_dict[fc_keys[0]].shape[0]
         
-        # Look for any layer with 'classifier' in the name
         classifier_keys = [k for k in state_dict.keys() if 'classifier' in k and 'weight' in k]
         if classifier_keys:
             return state_dict[classifier_keys[0]].shape[0]
@@ -5210,7 +4981,6 @@ def determine_num_classes_from_state(state_dict):
         print(f"Error determining num_classes: {e}")
         return None
 
-
 def adapt_model_state_dict(saved_state, target_state):
     """Adapt saved model state dict to match target model structure"""
     adapted_state = {}
@@ -5219,7 +4989,6 @@ def adapt_model_state_dict(saved_state, target_state):
     print(f"Saved state keys sample: {list(saved_state.keys())[:10]}...")
     print(f"Target state keys sample: {list(target_state.keys())[:10]}...")
     
-    # Copy all non-classifier layers directly
     for key in saved_state.keys():
         if not any(classifier_key in key for classifier_key in ['fc.', 'classifier.', 'head.']):
             if key in target_state:
@@ -5227,16 +4996,14 @@ def adapt_model_state_dict(saved_state, target_state):
             else:
                 print(f"Skipping key not in target: {key}")
     
-    # Handle classifier layer mapping
     target_classifier_keys = [k for k in target_state.keys() if any(c in k for c in ['fc.', 'classifier.', 'head.'])]
     saved_classifier_keys = [k for k in saved_state.keys() if any(c in k for c in ['fc.', 'classifier.', 'head.'])]
     
     print(f"Target classifier keys: {target_classifier_keys}")
     print(f"Saved classifier keys: {saved_classifier_keys}")
     
-    # Map different classifier structures
     if 'fc.weight' in target_state and 'fc.bias' in target_state:
-        # Target expects simple Linear layer
+
         if 'fc.1.weight' in saved_state and 'fc.1.bias' in saved_state:
             adapted_state['fc.weight'] = saved_state['fc.1.weight']
             adapted_state['fc.bias'] = saved_state['fc.1.bias']
@@ -5255,7 +5022,7 @@ def adapt_model_state_dict(saved_state, target_state):
             print("Mapped classifier -> fc")
     
     elif 'fc.1.weight' in target_state and 'fc.1.bias' in target_state:
-        # Target expects Sequential with Linear at index 1
+
         if 'fc.weight' in saved_state and 'fc.bias' in saved_state:
             adapted_state['fc.1.weight'] = saved_state['fc.weight']
             adapted_state['fc.1.bias'] = saved_state['fc.bias']
@@ -5266,7 +5033,7 @@ def adapt_model_state_dict(saved_state, target_state):
             print("Direct fc.1 mapping")
     
     elif 'classifier.weight' in target_state and 'classifier.bias' in target_state:
-        # Target expects ViT-style classifier
+
         if 'fc.weight' in saved_state and 'fc.bias' in saved_state:
             adapted_state['classifier.weight'] = saved_state['fc.weight']
             adapted_state['classifier.bias'] = saved_state['fc.bias']
@@ -5294,7 +5061,6 @@ def evaluate_model_on_unlabeled(self, num_samples=10):
             
         self.model.eval()
         
-        # Get a sample of unlabeled data
         sample_size = min(num_samples, len(self.unlabeled_data))
         sample_ids = list(self.unlabeled_data.keys())[:sample_size]
         
@@ -5307,12 +5073,10 @@ def evaluate_model_on_unlabeled(self, num_samples=10):
                 outputs = self.model(img_tensor)
                 probs = torch.softmax(outputs, dim=1)
                 
-                # Get top prediction
                 top_prob, top_class = torch.max(probs, dim=1)
                 confidence = float(top_prob.item())
                 predicted_class = int(top_class.item())
                 
-                # Get all class probabilities
                 all_probs = []
                 for i, prob in enumerate(probs[0]):
                     all_probs.append({
@@ -5320,7 +5084,6 @@ def evaluate_model_on_unlabeled(self, num_samples=10):
                         'probability': float(prob.item())
                     })
                 
-                # Sort by probability (highest first)
                 all_probs.sort(key=lambda x: x['probability'], reverse=True)
                 
                 predictions.append({
@@ -5332,7 +5095,6 @@ def evaluate_model_on_unlabeled(self, num_samples=10):
                 
                 all_confidences.append(confidence)
         
-        # Calculate overall statistics
         overall_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0
         
         return {
@@ -5358,19 +5120,17 @@ def get_evaluation_batch(self, num_samples=10):
         if not self.model or len(self.unlabeled_data) == 0:
             return None
             
-        # Get evaluation data
         evaluation_data = self.evaluate_model_on_unlabeled(num_samples)
         
         if evaluation_data:
-            # Add uncertainty scores for each prediction
+
             for pred in evaluation_data['predictions']:
-                # Calculate uncertainty (1 - confidence)
+
                 pred['uncertainty'] = 1 - pred['confidence']
                 
-                # Add prediction list in the format expected by the UI
                 pred['predictions'] = [
                     {
-                        'label': f"Class {i}",  # This will be updated with actual labels by the frontend
+                        'label': f"Class {i}",
                         'confidence': prob['probability']
                     }
                     for i, prob in enumerate(pred['all_probabilities'])
@@ -5389,7 +5149,6 @@ def inspect_and_save_model_info(model, output_path="model_inspection.json"):
     try:
         state_dict = model.state_dict()
         
-        # Collect all model information
         model_info = {
             "basic_info": {
                 "class_name": model.__class__.__name__,
@@ -5425,9 +5184,8 @@ def inspect_and_save_model_info(model, output_path="model_inspection.json"):
             "pytorch_model_info": {}
         }
         
-        # Try to get model structure
         try:
-            # Get model children and modules
+
             children = list(model.children())
             named_children = list(model.named_children())
             modules = list(model.modules())
@@ -5444,7 +5202,6 @@ def inspect_and_save_model_info(model, output_path="model_inspection.json"):
                 "has_features": hasattr(model, 'features')
             }
             
-            # Get specific layer info if they exist
             if hasattr(model, 'fc'):
                 fc_layer = model.fc
                 model_info["model_structure"]["fc_info"] = {
@@ -5481,7 +5238,6 @@ def inspect_and_save_model_info(model, output_path="model_inspection.json"):
         except Exception as struct_error:
             model_info["model_structure"]["error"] = str(struct_error)
         
-        # Try to get PyTorch model info
         try:
             import torch
             model_info["pytorch_model_info"] = {
@@ -5495,38 +5251,32 @@ def inspect_and_save_model_info(model, output_path="model_inspection.json"):
         except Exception as torch_error:
             model_info["pytorch_model_info"]["error"] = str(torch_error)
         
-        # Try to determine the actual model type
         detection_result = {
             "detected_type": "unknown",
             "confidence": "low",
             "reasoning": []
         }
         
-        # ResNet detection
         if model_info["architecture_detection"]["has_resnet_layers"]:
             detection_result["detected_type"] = "resnet"
             detection_result["confidence"] = "high"
             detection_result["reasoning"].append("Found ResNet layer structure (layer1, layer2, etc.)")
             
-            # Determine ResNet variant
             if model_info["model_structure"].get("fc_info", {}).get("in_features") == 512:
                 detection_result["variant"] = "resnet18"
             elif model_info["model_structure"].get("fc_info", {}).get("in_features") == 2048:
                 detection_result["variant"] = "resnet50"
         
-        # ViT detection
         elif model_info["architecture_detection"]["has_vit_indicators"]:
             detection_result["detected_type"] = "vision_transformer"
             detection_result["confidence"] = "high"
             detection_result["reasoning"].append("Found ViT indicators (cls_token, pos_embed, patch_embed, blocks)")
         
-        # Transformer detection
         elif model_info["architecture_detection"]["has_attention"]:
             detection_result["detected_type"] = "transformer"
             detection_result["confidence"] = "medium"
             detection_result["reasoning"].append("Found attention mechanisms")
         
-        # Class name detection
         class_name = model_info["basic_info"]["class_name"].lower()
         if 'resnet' in class_name:
             detection_result["class_name_suggests"] = "resnet"
@@ -5537,7 +5287,6 @@ def inspect_and_save_model_info(model, output_path="model_inspection.json"):
         
         model_info["detection_result"] = detection_result
         
-        # Save to JSON file
         import json
         with open(output_path, 'w') as f:
             json.dump(model_info, f, indent=2, default=str)
@@ -5563,21 +5312,17 @@ def inspect_and_save_model_info(model, output_path="model_inspection.json"):
 def determine_model_type_for_export(model):
     """Determine the model type for export based on model structure"""
     
-    # Get model state dict and class info
     state_dict = model.state_dict()
     class_name = model.__class__.__name__
-    
     
     print(f"=== MODEL TYPE DETECTION DEBUG ===")
     print(f"Model class name: {class_name}")
     print(f"State dict keys (first 10): {list(state_dict.keys())[:10]}")
     
-    # Check model class name first (most reliable)
     if any(vit_indicator in class_name for vit_indicator in ['ViT', 'Vision', 'Transformer', 'SimpleViTClassifier']):
         print("Detected ViT from class name")
         return 'vision-transformer'
     
-    # Check for ViT indicators in state dict keys
     vit_indicators = ['cls_token', 'pos_embed', 'patch_embed', 'blocks.', 'norm.weight', 'head.weight']
     found_vit_keys = [key for key in state_dict.keys() if any(indicator in key for indicator in vit_indicators)]
     
@@ -5585,16 +5330,14 @@ def determine_model_type_for_export(model):
         print(f"Detected ViT from state dict keys: {found_vit_keys[:5]}")
         return 'vision-transformer'
     
-    # Check for transformer-like structure (attention layers)
     attention_keys = [key for key in state_dict.keys() if any(pattern in key for pattern in ['attn', 'attention', 'self_attention'])]
     if attention_keys:
         print(f"Detected transformer from attention keys: {attention_keys[:3]}")
         return 'vision-transformer'
     
-    # Check for ResNet structure
     if any(key.startswith('layer') for key in state_dict.keys()):
         print("Detected ResNet from layer structure")
-        # Determine ResNet variant
+
         feature_count = None
         for key in state_dict.keys():
             if ('fc' in key and 'weight' in key) or ('classifier' in key and 'weight' in key):
@@ -5608,18 +5351,16 @@ def determine_model_type_for_export(model):
         elif feature_count == 2048:
             return 'resnet50'
         else:
-            return 'resnet50'  # Default
+            return 'resnet50'
     
-    # Check for other architectures
     if 'features' in [key.split('.')[0] for key in state_dict.keys()]:
         print("Detected VGG-style model")
         return 'vgg'
     
-    # If we can't determine, check the final classifier structure
     classifier_keys = [k for k in state_dict.keys() if any(c in k for c in ['classifier', 'head', 'fc'])]
     if classifier_keys:
         print(f"Found classifier keys: {classifier_keys}")
-        # If it has a simple classifier but no clear architecture, assume custom ViT
+
         if not any(key.startswith('layer') for key in state_dict.keys()):
             print("Assuming custom ViT due to classifier without ResNet layers")
             return 'vision-transformer'
@@ -5634,7 +5375,6 @@ async def load_existing_annotations():
         if not al_manager.project_name:
             raise HTTPException(status_code=400, detail="No project loaded")
         
-        # Check if we have any data to work with
         total_data = len(al_manager.labeled_data) + len(al_manager.unlabeled_data) + len(al_manager.validation_data)
         
         if total_data == 0:
@@ -5643,10 +5383,9 @@ async def load_existing_annotations():
                 "message": "No existing data found in project. Please upload new images."
             }
         
-        # If we have unlabeled data, get a batch for active learning
         if len(al_manager.unlabeled_data) > 0:
             try:
-                # Use the configured sampling strategy and batch size
+
                 strategy = getattr(automated_trainer, 'training_config', {}).get('sampling_strategy', 'least_confidence')
                 batch_size = getattr(automated_trainer, 'training_config', {}).get('batch_size', 32)
                 
@@ -5693,7 +5432,7 @@ async def update_project_labels(request: dict):
     """Update the current project labels"""
     try:
         labels = request.get('labels', [])
-        # Store labels in the al_manager for export
+
         al_manager.current_labels = labels
         return {"status": "success", "labels": labels}
     except Exception as e:
@@ -5751,14 +5490,13 @@ async def continue_from_evaluation():
         
         batch = al_manager.get_next_batch(strategy, min(batch_size, len(al_manager.unlabeled_data)))
         
-        # Store the batch so frontend can access it
         al_manager.current_batch = [x["image_id"] for x in batch]
         
         return {
             "status": "success",
             "message": f"Ready to continue with {len(batch)} new images for labeling",
             "batch_size": len(batch),
-            "batch": batch  # Return the batch to frontend
+            "batch": batch
         }
             
     except Exception as e:
@@ -5770,30 +5508,62 @@ async def train_episode(
     batch_size: int = 32,
     learning_rate: float = 0.001
 ):
-    """Train a single episode and get next batch"""
     try:
         if not al_manager.model:
-            raise HTTPException(
-                status_code=400, 
-                detail="Model not initialized. Please initialize project first."
-            )
-            
+            raise HTTPException(status_code=400, detail="Model not initialized.")
         if len(al_manager.labeled_data) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="No labeled data available for training"
-            )
-        
-        # Train the episode using the existing train_episode method
-        result = al_manager.train_episode(epochs, batch_size, learning_rate)
-        
-        return result
-        
-    except HTTPException as he:
-        raise he
+            raise HTTPException(status_code=400, detail="No labeled data available for training.")
+        if _training_state["running"]:
+            raise HTTPException(status_code=409, detail="Training already in progress.")
+
+        _training_state["running"] = True
+        _training_state["result"] = None
+        _training_state["error"] = None
+
+        loop = asyncio.get_event_loop()
+
+        def run_training():
+            try:
+                result = al_manager.train_episode(epochs, batch_size, learning_rate)
+                _training_state["result"] = result
+                _training_state["error"] = None
+            except Exception as e:
+                _training_state["error"] = str(e)
+                _training_state["result"] = None
+            finally:
+                _training_state["running"] = False
+
+        loop.run_in_executor(_thread_pool, run_training)
+
+        return {"status": "started", "message": "Training started in background. Poll /training-status for completion."}
+
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Train episode endpoint error: {str(e)}")
+        _training_state["running"] = False
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/training-status")
+async def training_status():
+    if _training_state["running"]:
+        return {"status": "running", "result": None, "error": None}
+    if _training_state["error"]:
+        return {"status": "error", "result": None, "error": _training_state["error"]}
+    if _training_state["result"] is not None:
+        return {"status": "complete", "result": _training_state["result"], "error": None}
+    return {"status": "idle", "result": None, "error": None}
+
+@app.get("/label-hint/{image_id}")
+async def get_label_hint(image_id: int):
+    hint = al_manager.ground_truth_labels.get(image_id)
+    if hint:
+        return {
+            "available": True,
+            "label_idx":  hint["label_idx"],
+            "label_name": hint["label_name"],
+        }
+    return {"available": False, "label_idx": None, "label_name": None}
 
 @app.get("/")
 async def main():

@@ -31,7 +31,7 @@ const activeLearnAPI = {
     if (!response.ok) {
       const error = await response.json();
       throw new Error(
-        error.detail || `Failed to initialize project: ${response.statusText}`
+        error.detail || `Failed to initialize project: ${response.statusText}`,
       );
     }
 
@@ -109,56 +109,58 @@ const activeLearnAPI = {
   },
 
   async startEpisode(epochs = 10, batchSize = 32, learningRate = 0.001) {
-    try {
-      const response = await fetch(`${API_URL}/train-episode`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          epochs: epochs,
-          batch_size: batchSize,
-          learning_rate: learningRate,
-        }),
-      });
+    const response = await fetch(`${API_URL}/train-episode`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        epochs,
+        batch_size: batchSize,
+        learning_rate: learningRate,
+      }),
+    });
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(
-          error.detail || `Failed to start episode: ${response.statusText}`
-        );
-      }
-
-      const result = await response.json();
-
-      // If training succeeded but getting next batch failed, handle that separately
-      if (result.status === "success" && result.error_getting_batch) {
-        console.warn(
-          "Training succeeded but couldn't get next batch:",
-          result.error_getting_batch
-        );
-
-        // Try to get batch manually
-        try {
-          await this.getNextBatch(result.strategy || "random", batchSize);
-          // If that worked, return the original result without the error
-          delete result.error_getting_batch;
-          return result;
-        } catch (batchError) {
-          console.error("Manual batch retrieval also failed:", batchError);
-          // Continue with the original result if manual retrieval fails
-        }
-      }
-
-      return result;
-    } catch (error) {
-      console.error("Error in startEpisode:", error);
-      throw error;
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(
+        error.detail || `Failed to start episode: ${response.statusText}`,
+      );
     }
+
+    const started = await response.json();
+    if (started.status !== "started") {
+      return started;
+    }
+
+    return new Promise((resolve, reject) => {
+      const poll = async () => {
+        try {
+          const res = await fetch(`${API_URL}/training-status`);
+          if (!res.ok) {
+            setTimeout(poll, 2000);
+            return;
+          }
+          const s = await res.json();
+          if (s.status === "running") {
+            setTimeout(poll, 2000);
+          } else if (s.status === "complete") {
+            resolve(s.result);
+          } else if (s.status === "error") {
+            reject(new Error(s.error || "Training failed"));
+          } else {
+            setTimeout(poll, 2000);
+          }
+        } catch (e) {
+          setTimeout(poll, 2000);
+        }
+      };
+      poll();
+    });
   },
 
   async recoverBatch(strategy = "random", batchSize = 32) {
     try {
       console.log(
-        `Attempting to recover batch with strategy: ${strategy}, size: ${batchSize}`
+        `Attempting to recover batch with strategy: ${strategy}, size: ${batchSize}`,
       );
 
       // Try to get a new batch with a simpler strategy
@@ -190,7 +192,7 @@ const activeLearnAPI = {
       const validBatchSize = parseInt(batchSize) || 32;
 
       console.log(
-        `Getting batch with strategy: ${validStrategy}, size: ${validBatchSize}`
+        `Getting batch with strategy: ${validStrategy}, size: ${validBatchSize}`,
       );
 
       const response = await fetch(`${API_URL}/get-batch`, {
@@ -231,7 +233,7 @@ const activeLearnAPI = {
       } catch (fallbackError) {
         console.error("Fallback failed:", fallbackError);
         throw new Error(
-          "Failed to get batch with both regular and fallback strategies"
+          "Failed to get batch with both regular and fallback strategies",
         );
       }
     }
@@ -280,7 +282,7 @@ const activeLearnAPI = {
     const response = await fetch(`${API_URL}/validation-status`);
     if (!response.ok) {
       throw new Error(
-        `Failed to get validation status: ${response.statusText}`
+        `Failed to get validation status: ${response.statusText}`,
       );
     }
     return await response.json();
@@ -307,7 +309,7 @@ const activeLearnAPI = {
       console.log(error);
       throw new Error(
         error.detail ||
-          `Failed to start automated training: ${JSON.stringify(error)}`
+          `Failed to start automated training: ${JSON.stringify(error)}`,
       );
     }
     return response.json();
@@ -320,8 +322,8 @@ const activeLearnAPI = {
     if (!response.ok) {
       throw new Error(
         `Failed to stop automated training: ${JSON.stringify(
-          response.statusText
-        )}`
+          response.statusText,
+        )}`,
       );
     }
     return response.json();
@@ -331,18 +333,17 @@ const activeLearnAPI = {
     const response = await fetch(`${API_URL}/automated-training-status`);
     if (!response.ok) {
       throw new Error(
-        `Failed to get automated training status: ${response.statusText}`
+        `Failed to get automated training status: ${response.statusText}`,
       );
     }
     return response.json();
   },
 
-  async getNextBatch() {
-    const response = await fetch(`${API_URL}/get-next-batch`, {
+  async getNextBatch(strategy = "least_confidence", batchSize = 32) {
+    const response = await fetch(`${API_URL}/get-batch`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ strategy, batch_size: batchSize }),
     });
     if (!response.ok) {
       throw new Error(`Failed to get next batch: ${response.statusText}`);
@@ -367,6 +368,16 @@ const activeLearnAPI = {
       body: JSON.stringify(config),
     });
     return response.json();
+  },
+
+  async getLabelHint(imageId) {
+    try {
+      const response = await fetch(`${API_URL}/label-hint/${imageId}`);
+      if (!response.ok) return { available: false };
+      return response.json();
+    } catch {
+      return { available: false };
+    }
   },
 
   getLRSchedulerStatus: async () => {
@@ -497,7 +508,7 @@ const activeLearnAPI = {
     csvFile,
     delimiter = ",",
     valSplit,
-    initialLabeledRatio
+    initialLabeledRatio,
   ) {
     const formData = new FormData();
     formData.append("csv_file", csvFile);
@@ -518,7 +529,7 @@ const activeLearnAPI = {
     if (!response.ok) {
       const error = await response.json();
       throw new Error(
-        error.detail || `Failed to upload CSV paths: ${response.statusText}`
+        error.detail || `Failed to upload CSV paths: ${response.statusText}`,
       );
     }
 
@@ -529,7 +540,7 @@ const activeLearnAPI = {
     files,
     labelColumn = "label",
     valSplit,
-    initialLabeledRatio
+    initialLabeledRatio,
   ) {
     const formData = new FormData();
 
@@ -556,7 +567,7 @@ const activeLearnAPI = {
       const error = await response.json();
       throw new Error(
         error.detail ||
-          `Failed to upload files with labels: ${response.statusText}`
+          `Failed to upload files with labels: ${response.statusText}`,
       );
     }
 
@@ -572,7 +583,7 @@ const activeLearnAPI = {
     delimiter = ",",
     valSplit = 0.2,
     initialLabeledRatio = 0.4,
-    expectedLabelMapping = null // Add this parameter
+    expectedLabelMapping = null, // Add this parameter
   ) => {
     const formData = new FormData();
     formData.append("csv_file", csvFile);
@@ -586,7 +597,7 @@ const activeLearnAPI = {
       console.log("Sending expected label mapping:", expectedLabelMapping);
       formData.append(
         "expected_label_mapping",
-        JSON.stringify(expectedLabelMapping)
+        JSON.stringify(expectedLabelMapping),
       );
     }
 
@@ -665,7 +676,7 @@ const activeLearnAPI = {
 
   async evaluateModel(numSamples = 10) {
     const response = await fetch(
-      `${API_URL}/evaluate-model?num_samples=${numSamples}`
+      `${API_URL}/evaluate-model?num_samples=${numSamples}`,
     );
     if (!response.ok) {
       const error = await response.json();
@@ -677,7 +688,7 @@ const activeLearnAPI = {
   // Get evaluation batch for display
   async getEvaluationBatch(numSamples = 10) {
     const response = await fetch(
-      `${API_URL}/evaluation-batch?num_samples=${numSamples}`
+      `${API_URL}/evaluation-batch?num_samples=${numSamples}`,
     );
     if (!response.ok) {
       const error = await response.json();

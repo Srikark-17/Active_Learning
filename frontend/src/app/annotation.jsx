@@ -165,7 +165,7 @@ const ActiveLearningUI = () => {
       "Relevant predictions (first",
       userLabels.length,
       "):",
-      relevantPredictions
+      relevantPredictions,
     );
 
     // Map to use actual label names with EXPLICIT confidence preservation
@@ -177,7 +177,7 @@ const ActiveLearningUI = () => {
         originalLabel: pred.label,
       };
       console.log(
-        `Mapping ${idx}: ${pred.label} (${pred.confidence}) -> ${mappedPred.label} (${mappedPred.confidence})`
+        `Mapping ${idx}: ${pred.label} (${pred.confidence}) -> ${mappedPred.label} (${mappedPred.confidence})`,
       );
       return mappedPred;
     });
@@ -188,7 +188,7 @@ const ActiveLearningUI = () => {
     const sorted = [...mapped].sort((a, b) => {
       const result = b.confidence - a.confidence;
       console.log(
-        `Sorting: ${b.label}(${b.confidence}) vs ${a.label}(${a.confidence}) = ${result}`
+        `Sorting: ${b.label}(${b.confidence}) vs ${a.label}(${a.confidence}) = ${result}`,
       );
       return result;
     });
@@ -220,7 +220,7 @@ const ActiveLearningUI = () => {
               (x, i) => ({
                 x,
                 y: newMetrics.current_epoch_losses.y[i],
-              })
+              }),
             ),
           });
         } catch (error) {
@@ -292,7 +292,7 @@ const ActiveLearningUI = () => {
             setLrHistory([]);
           }
         },
-        status?.is_training ? 1000 : 5000
+        status?.is_training ? 1000 : 5000,
       );
     }
     return () => clearInterval(interval);
@@ -349,7 +349,7 @@ const ActiveLearningUI = () => {
   const getNextBatch = async () => {
     try {
       console.log(
-        `Getting next batch with strategy: ${samplingStrategy}, size: ${batchSize}`
+        `Getting next batch with strategy: ${samplingStrategy}, size: ${batchSize}`,
       );
 
       // Validate batch size to avoid None or invalid values
@@ -357,7 +357,7 @@ const ActiveLearningUI = () => {
 
       const batch = await activeLearnAPI.getBatch(
         samplingStrategy,
-        validBatchSize
+        validBatchSize,
       );
 
       console.log(`Received batch with ${batch.length} images`);
@@ -378,7 +378,7 @@ const ActiveLearningUI = () => {
         img.onerror = (e) => {
           console.error("Image loading error:", e);
           setErrorMessage(
-            `Failed to load image (ID: ${batch[0].image_id}). Please check image paths.`
+            `Failed to load image (ID: ${batch[0].image_id}). Please check image paths.`,
           );
         };
 
@@ -396,30 +396,30 @@ const ActiveLearningUI = () => {
         console.log("Attempting fallback to random sampling");
         const fallbackBatch = await activeLearnAPI.getBatch(
           "random",
-          Math.min(parseInt(batchSize) || 32, status.unlabeled_count || 10)
+          Math.min(parseInt(batchSize) || 32, status.unlabeled_count || 10),
         );
 
         console.log(
-          `Received fallback batch with ${fallbackBatch.length} images`
+          `Received fallback batch with ${fallbackBatch.length} images`,
         );
         setCurrentBatch(fallbackBatch);
 
         if (fallbackBatch.length > 0) {
           const imageUrl = activeLearnAPI.getImageUrl(
-            fallbackBatch[0].image_id
+            fallbackBatch[0].image_id,
           );
           setCurrentImage(imageUrl);
           setCurrentImageIndex(0);
           setInfoMessage("Using random sampling as fallback");
         } else {
           setErrorMessage(
-            "Failed to get any images. Try using a smaller batch size."
+            "Failed to get any images. Try using a smaller batch size.",
           );
         }
       } catch (fallbackError) {
         console.error("Fallback getBatch error:", fallbackError);
         setErrorMessage(
-          "Failed to get batch even with fallback strategy. Try restarting the application."
+          "Failed to get batch even with fallback strategy. Try restarting the application.",
         );
       }
     }
@@ -429,7 +429,7 @@ const ActiveLearningUI = () => {
     files,
     uploadType = false,
     extraParam = ",",
-    detectedLabels = []
+    detectedLabels = [],
   ) => {
     try {
       console.log("handleImagesLoaded called with:", {
@@ -480,7 +480,7 @@ const ActiveLearningUI = () => {
         });
 
         setSuccessMessage(
-          "CSV with labels processed. Click 'Start Project' to begin."
+          "CSV with labels processed. Click 'Start Project' to begin.",
         );
         return;
       }
@@ -527,7 +527,9 @@ const ActiveLearningUI = () => {
     if (currentImageIndex < currentBatch.length - 1) {
       setCurrentImageIndex((prev) => prev + 1);
       setCurrentImage(
-        activeLearnAPI.getImageUrl(currentBatch[currentImageIndex + 1].image_id)
+        activeLearnAPI.getImageUrl(
+          currentBatch[currentImageIndex + 1].image_id,
+        ),
       );
     }
   };
@@ -536,7 +538,9 @@ const ActiveLearningUI = () => {
     if (currentImageIndex > 0) {
       setCurrentImageIndex((prev) => prev - 1);
       setCurrentImage(
-        activeLearnAPI.getImageUrl(currentBatch[currentImageIndex - 1].image_id)
+        activeLearnAPI.getImageUrl(
+          currentBatch[currentImageIndex - 1].image_id,
+        ),
       );
     }
   };
@@ -545,11 +549,11 @@ const ActiveLearningUI = () => {
     try {
       const imageId = currentBatch[currentImageIndex].image_id;
       const newCompleted = batchStats.completed + 1;
-      const batch_complete = newCompleted === batchSize;
+      const batch_complete = newCompleted === currentBatch.length;
 
       const result = await activeLearnAPI.submitLabel(
         imageId,
-        parseInt(selectedLabel)
+        parseInt(selectedLabel),
       );
 
       setBatchStats((prev) => ({
@@ -568,7 +572,7 @@ const ActiveLearningUI = () => {
         try {
           const episodeResult = await activeLearnAPI.startEpisode(
             epochs,
-            batchSize
+            batchSize,
           );
 
           if (episodeResult.final_val_acc) {
@@ -649,7 +653,7 @@ const ActiveLearningUI = () => {
             console.error("Failed to fetch status:", error);
           }
         },
-        status?.is_training ? 1000 : 5000
+        status?.is_training ? 1000 : 5000,
       );
     }
     return () => clearInterval(interval);
@@ -701,7 +705,7 @@ const ActiveLearningUI = () => {
       // Handle CSV with labels using the ref
       if (fileDataRef.current?.type === "csv-with-labels") {
         setInfoMessage(
-          `Processing CSV with annotations (using column: ${fileDataRef.current.labelColumn})...`
+          `Processing CSV with annotations (using column: ${fileDataRef.current.labelColumn})...`,
         );
 
         const csvFile = fileDataRef.current.csvFile;
@@ -710,11 +714,17 @@ const ActiveLearningUI = () => {
           throw new Error("CSV file object is not valid");
         }
 
-        // Create expected label mapping based on frontend labels
         const expectedLabelMapping = {};
-        labels.forEach((label, index) => {
+        const sourceLabels =
+          fileDataRef.current.detectedLabels?.length > 0
+            ? [...fileDataRef.current.detectedLabels].sort()
+            : [...labels].sort();
+        sourceLabels.forEach((label, index) => {
           expectedLabelMapping[label] = index;
         });
+        if (sourceLabels.length > labels.length) {
+          setLabels(sourceLabels);
+        }
 
         const result = await activeLearnAPI.uploadCSVPathsWithLabels(
           csvFile,
@@ -722,11 +732,21 @@ const ActiveLearningUI = () => {
           fileDataRef.current.delimiter || ",",
           valSplit,
           initialLabeledRatio,
-          expectedLabelMapping
+          expectedLabelMapping,
         );
 
+        if (
+          result.label_mapping &&
+          Object.keys(result.label_mapping).length > 0
+        ) {
+          const serverLabels = Object.entries(result.label_mapping)
+            .sort(([, a], [, b]) => a - b)
+            .map(([name]) => name);
+          setLabels(serverLabels);
+        }
+
         setSuccessMessage(
-          `Successfully loaded ${result.stats.total} images (${result.stats.labeled} with labels, ${result.stats.unlabeled} unlabeled, ${result.stats.validation} for validation)`
+          `Successfully loaded ${result.stats.total} images (${result.stats.labeled} with labels, ${result.stats.unlabeled} unlabeled, ${result.stats.validation} for validation)`,
         );
 
         // Start training if we have enough labeled data AND initial training wasn't done automatically
@@ -735,7 +755,7 @@ const ActiveLearningUI = () => {
           try {
             const episodeResult = await activeLearnAPI.startEpisode(
               epochs,
-              batchSize
+              batchSize,
             );
             if (episodeResult.final_val_acc || episodeResult.best_accuracy) {
               const accuracy =
@@ -743,8 +763,8 @@ const ActiveLearningUI = () => {
               setValidationAccuracy(accuracy);
               setSuccessMessage(
                 `Initial training complete. Validation accuracy: ${accuracy.toFixed(
-                  2
-                )}%`
+                  2,
+                )}%`,
               );
             } else {
               setSuccessMessage("Initial training complete");
@@ -753,7 +773,7 @@ const ActiveLearningUI = () => {
             console.error("Initial training error:", error);
             // If initial training fails, still proceed but show warning
             setInfoMessage(
-              "Initial training encountered issues, but data is loaded. You can continue with manual training."
+              "Initial training encountered issues, but data is loaded. You can continue with manual training.",
             );
           }
         }
@@ -761,13 +781,13 @@ const ActiveLearningUI = () => {
       // Handle combined upload with labels
       else if (loadedImages.type === "combined-with-labels") {
         setInfoMessage(
-          `Processing CSV with labels (${loadedImages.labelColumn}) and images together...`
+          `Processing CSV with labels (${loadedImages.labelColumn}) and images together...`,
         );
         const result = await activeLearnAPI.uploadCombinedWithLabels(
           fileDataRef.current.files,
           fileDataRef.current.labelColumn,
           valSplit,
-          initialLabeledRatio
+          initialLabeledRatio,
         );
 
         // Update labels from label mapping if needed
@@ -792,7 +812,7 @@ const ActiveLearningUI = () => {
         }
 
         setSuccessMessage(
-          `Successfully loaded ${result.stats.total} images (${result.stats.labeled} with labels, ${result.stats.unlabeled} unlabeled, ${result.stats.validation} for validation)`
+          `Successfully loaded ${result.stats.total} images (${result.stats.labeled} with labels, ${result.stats.unlabeled} unlabeled, ${result.stats.validation} for validation)`,
         );
 
         // Start training if we have enough labeled data
@@ -801,7 +821,7 @@ const ActiveLearningUI = () => {
           try {
             const episodeResult = await activeLearnAPI.startEpisode(
               epochs,
-              batchSize
+              batchSize,
             );
             if (episodeResult.final_val_acc) {
               setValidationAccuracy(episodeResult.final_val_acc);
@@ -819,10 +839,10 @@ const ActiveLearningUI = () => {
         const result = await activeLearnAPI.uploadCombined(
           loadedImages.files,
           valSplit,
-          initialLabeledRatio
+          initialLabeledRatio,
         );
         setSuccessMessage(
-          `Successfully processed ${result.split_info.total_images} images`
+          `Successfully processed ${result.split_info.total_images} images`,
         );
       }
       // Handle CSV-only upload
@@ -837,15 +857,15 @@ const ActiveLearningUI = () => {
             csvFile,
             delimiter,
             valSplit,
-            initialLabeledRatio
+            initialLabeledRatio,
           );
           setSuccessMessage(
-            `Successfully loaded ${result.split_info.total_images} images from CSV`
+            `Successfully loaded ${result.split_info.total_images} images from CSV`,
           );
         } catch (error) {
           console.error("CSV upload error:", error);
           setErrorMessage(
-            `Error processing CSV: ${error.message}. Try uploading images directly or using the "Upload CSV + Images Together" option.`
+            `Error processing CSV: ${error.message}. Try uploading images directly or using the "Upload CSV + Images Together" option.`,
           );
           return;
         }
@@ -854,18 +874,18 @@ const ActiveLearningUI = () => {
         const result = await activeLearnAPI.uploadData(
           loadedImages,
           valSplit,
-          initialLabeledRatio
+          initialLabeledRatio,
         );
         setSuccessMessage(
           `Successfully processed ${
             result.split_info?.total_images || loadedImages.length
-          } images`
+          } images`,
         );
       }
 
       // **NEW: Automatically get first batch after processing images**
       setSuccessMessage(
-        "Processing complete. Getting first batch for active learning..."
+        "Processing complete. Getting first batch for active learning...",
       );
 
       try {
@@ -875,12 +895,12 @@ const ActiveLearningUI = () => {
             validationAccuracy
               ? `Model accuracy: ${validationAccuracy.toFixed(2)}%. `
               : ""
-          }Start labeling images.`
+          }Start labeling images.`,
         );
       } catch (batchError) {
         console.error("Error getting first batch:", batchError);
         setSuccessMessage(
-          "Images processed successfully, but couldn't get first batch. Try clicking 'Start New Batch' in the status section."
+          "Images processed successfully, but couldn't get first batch. Try clicking 'Start New Batch' in the status section.",
         );
       }
 
@@ -892,7 +912,7 @@ const ActiveLearningUI = () => {
       if (
         error.message &&
         error.message.includes(
-          "Could not find or process any images from the CSV"
+          "Could not find or process any images from the CSV",
         )
       ) {
         setErrorMessage(
@@ -903,11 +923,11 @@ Possible solutions:
 1. Use absolute paths in your CSV
 2. Place images in the same folder as your application
 3. Update your CSV with correct relative paths
-4. Try using just filenames (without directory paths) in your CSV`
+4. Try using just filenames (without directory paths) in your CSV`,
         );
       } else if (error.message && error.message.includes("422")) {
         setErrorMessage(
-          "Project initialization failed. Try reloading the page and starting fresh."
+          "Project initialization failed. Try reloading the page and starting fresh.",
         );
       } else {
         setErrorMessage("Error: " + error.message);
@@ -959,7 +979,7 @@ Possible solutions:
           setCurrentImageIndex(0);
           if (result.batch.length > 0) {
             setCurrentImage(
-              activeLearnAPI.getImageUrl(result.batch[0].image_id)
+              activeLearnAPI.getImageUrl(result.batch[0].image_id),
             );
           }
         }
@@ -1061,7 +1081,7 @@ Possible solutions:
       // Check if project is initialized first
       if (!isInitialized) {
         setErrorMessage(
-          "Please initialize the project with Start Project before starting automated training."
+          "Please initialize the project with Start Project before starting automated training.",
         );
         return;
       }
@@ -1069,7 +1089,7 @@ Possible solutions:
       // Check if images are loaded
       if (currentBatch.length === 0) {
         setErrorMessage(
-          "No images loaded. Please ensure images are loaded before starting training."
+          "No images loaded. Please ensure images are loaded before starting training.",
         );
         try {
           await getNextBatch();
@@ -1160,7 +1180,7 @@ Possible solutions:
         const errorData = await response.text();
         console.error("Checkpoint load error:", errorData);
         throw new Error(
-          `Failed to load checkpoint: ${response.status} - ${errorData}`
+          `Failed to load checkpoint: ${response.status} - ${errorData}`,
         );
       }
 
@@ -1180,7 +1200,7 @@ Possible solutions:
       setSuccessMessage(
         `Checkpoint loaded successfully! Episode ${
           result.episode
-        }, Accuracy: ${result.best_val_acc.toFixed(2)}%`
+        }, Accuracy: ${result.best_val_acc.toFixed(2)}%`,
       );
     } catch (error) {
       console.error("Load checkpoint error:", error);
@@ -1221,6 +1241,19 @@ Possible solutions:
       loadCheckpoints();
     }
   }, [currentBatch]);
+
+  useEffect(() => {
+    if (!currentBatch.length) return;
+    const imageId = currentBatch[currentImageIndex]?.image_id;
+    if (imageId == null) return;
+    activeLearnAPI.getLabelHint(imageId).then((hint) => {
+      if (hint?.available) {
+        console.log(
+          `[Label Hint] Image ${imageId} → ${hint.label_name} (index ${hint.label_idx})`,
+        );
+      }
+    });
+  }, [currentBatch, currentImageIndex]);
 
   const hasLoadedFiles = () => {
     // Check if we have files in any format
@@ -1265,12 +1298,12 @@ Possible solutions:
         setInfoMessage("Automatically loading next batch...");
         await getNextBatch();
         setSuccessMessage(
-          `New batch loaded! Ready to continue active learning.`
+          `New batch loaded! Ready to continue active learning.`,
         );
       } catch (error) {
         console.error("Auto-batch loading failed:", error);
         setErrorMessage(
-          "Couldn't automatically load batch. Try manual batch loading."
+          "Couldn't automatically load batch. Try manual batch loading.",
         );
       }
     }
@@ -1519,7 +1552,7 @@ Possible solutions:
                                           setLrConfig((prev) => ({
                                             ...prev,
                                             initial_lr: parseFloat(
-                                              e.target.value
+                                              e.target.value,
                                             ),
                                           }))
                                         }
@@ -1537,7 +1570,7 @@ Possible solutions:
                                         value={batchSize}
                                         onChange={(e) => {
                                           const newBatchSize = Number(
-                                            e.target.value
+                                            e.target.value,
                                           );
                                           setBatchSize(newBatchSize);
                                           setBatchStats((prev) => ({
@@ -1562,7 +1595,7 @@ Possible solutions:
                                         value={epochs}
                                         onChange={(e) => {
                                           const newEpochs = Number(
-                                            e.target.value
+                                            e.target.value,
                                           );
                                           setEpochs(newEpochs);
                                         }}
@@ -1607,7 +1640,7 @@ Possible solutions:
                                       value={initialLabeledRatio}
                                       onChange={(e) =>
                                         setInitialLabeledRatio(
-                                          parseFloat(e.target.value)
+                                          parseFloat(e.target.value),
                                         )
                                       }
                                       className="flex-1"
@@ -1635,7 +1668,7 @@ Possible solutions:
                                         <span>Validation Set:</span>
                                         <span>
                                           {Math.round(
-                                            loadedImages.length * valSplit
+                                            loadedImages.length * valSplit,
                                           )}{" "}
                                           images
                                         </span>
@@ -1646,7 +1679,7 @@ Possible solutions:
                                           {Math.round(
                                             loadedImages.length *
                                               (1 - valSplit) *
-                                              initialLabeledRatio
+                                              initialLabeledRatio,
                                           )}{" "}
                                           images
                                         </span>
@@ -1656,12 +1689,12 @@ Possible solutions:
                                         <span>
                                           {loadedImages.length -
                                             Math.round(
-                                              loadedImages.length * valSplit
+                                              loadedImages.length * valSplit,
                                             ) -
                                             Math.round(
                                               loadedImages.length *
                                                 (1 - valSplit) *
-                                                initialLabeledRatio
+                                                initialLabeledRatio,
                                             )}{" "}
                                           images
                                         </span>
@@ -1684,7 +1717,7 @@ Possible solutions:
                                   console.log("Full result:", result);
 
                                   setProjectName(
-                                    result.project_info.project_name
+                                    result.project_info.project_name,
                                   );
                                   const importedModelType =
                                     result.project_info.model_type ||
@@ -1700,14 +1733,14 @@ Possible solutions:
                                     setLabels(result.labels.label_names);
                                     console.log(
                                       "Restored labels:",
-                                      result.labels.label_names
+                                      result.labels.label_names,
                                     );
                                   } else {
                                     const numClasses =
                                       result.project_info.num_classes || 2;
                                     const defaultLabels = Array.from(
                                       { length: numClasses },
-                                      (_, i) => `Class ${i + 1}`
+                                      (_, i) => `Class ${i + 1}`,
                                     );
                                     setLabels(defaultLabels);
                                   }
@@ -1716,21 +1749,22 @@ Possible solutions:
                                   if (result.hyperparameters) {
                                     setSamplingStrategy(
                                       result.hyperparameters
-                                        .sampling_strategy || "least_confidence"
+                                        .sampling_strategy ||
+                                        "least_confidence",
                                     );
                                     setBatchSize(
-                                      result.hyperparameters.batch_size || 32
+                                      result.hyperparameters.batch_size || 32,
                                     );
                                     setEpochs(
-                                      result.hyperparameters.epochs || 10
+                                      result.hyperparameters.epochs || 10,
                                     );
                                     setValSplit(
                                       result.hyperparameters.validation_split ||
-                                        0.2
+                                        0.2,
                                     );
                                     setInitialLabeledRatio(
                                       result.hyperparameters
-                                        .initial_labeled_ratio || 0.1
+                                        .initial_labeled_ratio || 0.1,
                                     );
                                   }
 
@@ -1738,7 +1772,7 @@ Possible solutions:
                                   if (result.project_info) {
                                     setValidationAccuracy(
                                       result.project_info
-                                        .best_validation_accuracy || 0
+                                        .best_validation_accuracy || 0,
                                     );
                                   }
 
@@ -1751,7 +1785,7 @@ Possible solutions:
                                     setSuccessMessage(
                                       `Project imported successfully! Model: ${importedModelType}. 
        Loaded ${result.dataset_stats.loaded_from_annotations} images automatically. 
-       Getting first batch for active learning...`
+       Getting first batch for active learning...`,
                                     );
 
                                     // Auto-start by getting the first batch
@@ -1759,15 +1793,15 @@ Possible solutions:
                                       try {
                                         await getNextBatch();
                                         setSuccessMessage(
-                                          `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`
+                                          `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`,
                                         );
                                       } catch (error) {
                                         console.error(
                                           "Error getting first batch:",
-                                          error
+                                          error,
                                         );
                                         setErrorMessage(
-                                          `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`
+                                          `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`,
                                         );
                                       }
                                     }, 1000);
@@ -1777,12 +1811,12 @@ Possible solutions:
                                   ) {
                                     // Some images loaded but project not ready (maybe all labeled)
                                     setErrorMessage(
-                                      `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`
+                                      `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`,
                                     );
                                   } else {
                                     // No images loaded automatically
                                     setErrorMessage(
-                                      `${result.message} Images were not found in the expected locations. You can upload new images to continue.`
+                                      `${result.message} Images were not found in the expected locations. You can upload new images to continue.`,
                                     );
                                   }
 
@@ -1817,12 +1851,12 @@ Possible solutions:
                                   <ModelAdaptationControls
                                     onAdaptSuccess={(result) => {
                                       setSuccessMessage(
-                                        `Model adaptation successful using ${result.adaptation_type} strategy`
+                                        `Model adaptation successful using ${result.adaptation_type} strategy`,
                                       );
                                     }}
                                     onError={(errorMsg) => {
                                       setErrorMessage(
-                                        `Adaptation error: ${errorMsg}`
+                                        `Adaptation error: ${errorMsg}`,
                                       );
                                     }}
                                     disabled={!isInitialized || isRetraining}
@@ -1844,7 +1878,7 @@ Possible solutions:
                                           onChange={(e) =>
                                             handleLabelChange(
                                               index,
-                                              e.target.value
+                                              e.target.value,
                                             )
                                           }
                                           placeholder={`Label ${index + 1}`}
@@ -1947,7 +1981,7 @@ Possible solutions:
                                             setLrConfig((prev) => ({
                                               ...prev,
                                               initial_lr: parseFloat(
-                                                e.target.value
+                                                e.target.value,
                                               ),
                                             }))
                                           }
@@ -1965,7 +1999,7 @@ Possible solutions:
                                           value={batchSize}
                                           onChange={(e) => {
                                             const newBatchSize = Number(
-                                              e.target.value
+                                              e.target.value,
                                             );
                                             setBatchSize(newBatchSize);
                                             setBatchStats((prev) => ({
@@ -1990,7 +2024,7 @@ Possible solutions:
                                           value={epochs}
                                           onChange={(e) => {
                                             const newEpochs = Number(
-                                              e.target.value
+                                              e.target.value,
                                             );
                                             setEpochs(newEpochs);
                                           }}
@@ -2013,7 +2047,7 @@ Possible solutions:
                                             value={valSplit}
                                             onChange={(e) =>
                                               setValSplit(
-                                                parseFloat(e.target.value)
+                                                parseFloat(e.target.value),
                                               )
                                             }
                                             className="flex-1"
@@ -2035,7 +2069,7 @@ Possible solutions:
                                             value={initialLabeledRatio}
                                             onChange={(e) =>
                                               setInitialLabeledRatio(
-                                                parseFloat(e.target.value)
+                                                parseFloat(e.target.value),
                                               )
                                             }
                                             className="flex-1"
@@ -2091,13 +2125,11 @@ Possible solutions:
                             {isLoading
                               ? "Initializing Project..."
                               : isInitialized && !isProjectFullyInitialized
-                              ? "Start Project with Pretrained Model"
-                              : "Start Project"}
+                                ? "Start Project with Pretrained Model"
+                                : "Start Project"}
                           </Button>
                           {isInitialized && (
                             <AutomatedTrainingControls
-                              onStart={handleStartAutomatedTraining}
-                              onStop={handleStopAutomatedTraining}
                               status={automatedStatus}
                               metrics={trainingMetrics}
                               disabled={!isInitialized}
@@ -2126,7 +2158,7 @@ Possible solutions:
                                     // ALWAYS send current labels before export
                                     console.log(
                                       "Sending labels to backend before export:",
-                                      labels
+                                      labels,
                                     );
 
                                     if (labels.length > 0) {
@@ -2140,12 +2172,12 @@ Possible solutions:
                                           body: JSON.stringify({
                                             labels: labels,
                                           }),
-                                        }
+                                        },
                                       );
 
                                       if (!labelResponse.ok) {
                                         console.warn(
-                                          "Failed to update labels, but continuing with export"
+                                          "Failed to update labels, but continuing with export",
                                         );
                                       }
                                     }
@@ -2154,12 +2186,12 @@ Possible solutions:
                                       `http://localhost:8000/export-project`,
                                       {
                                         method: "GET",
-                                      }
+                                      },
                                     );
 
                                     if (!response.ok) {
                                       throw new Error(
-                                        `Failed to export project: ${response.statusText}`
+                                        `Failed to export project: ${response.statusText}`,
                                       );
                                     }
 
@@ -2171,7 +2203,7 @@ Possible solutions:
 
                                     const contentDisposition =
                                       response.headers.get(
-                                        "content-disposition"
+                                        "content-disposition",
                                       );
                                     let filename = `${projectName}_project_${new Date()
                                       .toISOString()
@@ -2180,7 +2212,7 @@ Possible solutions:
                                     if (contentDisposition) {
                                       const filenameMatch =
                                         contentDisposition.match(
-                                          /filename="([^"]+)"/
+                                          /filename="([^"]+)"/,
                                         );
                                       if (filenameMatch) {
                                         filename = filenameMatch[1];
@@ -2194,12 +2226,12 @@ Possible solutions:
                                     document.body.removeChild(a);
 
                                     setSuccessMessage(
-                                      "Project exported successfully!"
+                                      "Project exported successfully!",
                                     );
                                   } catch (error) {
                                     setErrorMessage(
                                       "Failed to export project: " +
-                                        error.message
+                                        error.message,
                                     );
                                   }
                                 }}
@@ -2232,14 +2264,14 @@ Possible solutions:
                           setLabels(result.labels.label_names);
                           console.log(
                             "Restored labels:",
-                            result.labels.label_names
+                            result.labels.label_names,
                           );
                         } else {
                           const numClasses =
                             result.project_info.num_classes || 2;
                           const defaultLabels = Array.from(
                             { length: numClasses },
-                            (_, i) => `Class ${i + 1}`
+                            (_, i) => `Class ${i + 1}`,
                           );
                           setLabels(defaultLabels);
                         }
@@ -2248,22 +2280,22 @@ Possible solutions:
                         if (result.hyperparameters) {
                           setSamplingStrategy(
                             result.hyperparameters.sampling_strategy ||
-                              "least_confidence"
+                              "least_confidence",
                           );
                           setBatchSize(result.hyperparameters.batch_size || 32);
                           setEpochs(result.hyperparameters.epochs || 10);
                           setValSplit(
-                            result.hyperparameters.validation_split || 0.2
+                            result.hyperparameters.validation_split || 0.2,
                           );
                           setInitialLabeledRatio(
-                            result.hyperparameters.initial_labeled_ratio || 0.1
+                            result.hyperparameters.initial_labeled_ratio || 0.1,
                           );
                         }
 
                         // Update metrics
                         if (result.project_info) {
                           setValidationAccuracy(
-                            result.project_info.best_validation_accuracy || 0
+                            result.project_info.best_validation_accuracy || 0,
                           );
                         }
 
@@ -2273,7 +2305,7 @@ Possible solutions:
                           setSuccessMessage(
                             `Project imported successfully! Model: ${importedModelType}. 
        Loaded ${result.dataset_stats.loaded_from_annotations} images automatically. 
-       Getting first batch for active learning...`
+       Getting first batch for active learning...`,
                           );
 
                           // Auto-start by getting the first batch
@@ -2281,15 +2313,15 @@ Possible solutions:
                             try {
                               await getNextBatch();
                               setSuccessMessage(
-                                `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`
+                                `Ready for active learning! ${result.dataset_stats.current_labeled} labeled, ${result.dataset_stats.current_unlabeled} unlabeled images loaded.`,
                               );
                             } catch (error) {
                               console.error(
                                 "Error getting first batch:",
-                                error
+                                error,
                               );
                               setErrorMessage(
-                                `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`
+                                `Images loaded but couldn't get first batch: ${error.message}. Try manually starting a new batch.`,
                               );
                             }
                           }, 1000);
@@ -2298,12 +2330,12 @@ Possible solutions:
                         ) {
                           // Some images loaded but project not ready (maybe all labeled)
                           setErrorMessage(
-                            `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`
+                            `Project imported with ${result.dataset_stats.loaded_from_annotations} images, but no unlabeled data for active learning. Upload more images or check your data split.`,
                           );
                         } else {
                           // No images loaded automatically
                           setErrorMessage(
-                            `${result.message} Images were not found in the expected locations. You can upload new images to continue.`
+                            `${result.message} Images were not found in the expected locations. You can upload new images to continue.`,
                           );
                         }
 
@@ -2482,7 +2514,7 @@ Possible solutions:
                                     value={batchSize}
                                     onChange={(e) => {
                                       const newBatchSize = Number(
-                                        e.target.value
+                                        e.target.value,
                                       );
                                       setBatchSize(newBatchSize);
                                       setBatchStats((prev) => ({
@@ -2547,7 +2579,7 @@ Possible solutions:
                                       value={initialLabeledRatio}
                                       onChange={(e) =>
                                         setInitialLabeledRatio(
-                                          parseFloat(e.target.value)
+                                          parseFloat(e.target.value),
                                         )
                                       }
                                       className="flex-1"
@@ -2598,16 +2630,14 @@ Possible solutions:
                               {isLoading
                                 ? "Initializing Project..."
                                 : isProjectFullyInitialized
-                                ? "Project Started"
-                                : "Start Project"}
+                                  ? "Project Started"
+                                  : "Start Project"}
                             </Button>
 
                             {/* Training Controls */}
                             {isProjectFullyInitialized && (
                               <>
                                 <AutomatedTrainingControls
-                                  onStart={handleStartAutomatedTraining}
-                                  onStop={handleStopAutomatedTraining}
                                   status={automatedStatus}
                                   metrics={trainingMetrics}
                                   disabled={!isInitialized}
@@ -2635,7 +2665,7 @@ Possible solutions:
                                           // ALWAYS send current labels before export
                                           console.log(
                                             "Sending labels to backend before export:",
-                                            labels
+                                            labels,
                                           );
 
                                           if (labels.length > 0) {
@@ -2650,12 +2680,12 @@ Possible solutions:
                                                 body: JSON.stringify({
                                                   labels: labels,
                                                 }),
-                                              }
+                                              },
                                             );
 
                                             if (!labelResponse.ok) {
                                               console.warn(
-                                                "Failed to update labels, but continuing with export"
+                                                "Failed to update labels, but continuing with export",
                                               );
                                             }
                                           }
@@ -2664,12 +2694,12 @@ Possible solutions:
                                             `http://localhost:8000/export-project`,
                                             {
                                               method: "GET",
-                                            }
+                                            },
                                           );
 
                                           if (!response.ok) {
                                             throw new Error(
-                                              `Failed to export project: ${response.statusText}`
+                                              `Failed to export project: ${response.statusText}`,
                                             );
                                           }
 
@@ -2681,7 +2711,7 @@ Possible solutions:
 
                                           const contentDisposition =
                                             response.headers.get(
-                                              "content-disposition"
+                                              "content-disposition",
                                             );
                                           let filename = `${projectName}_project_${new Date()
                                             .toISOString()
@@ -2690,7 +2720,7 @@ Possible solutions:
                                           if (contentDisposition) {
                                             const filenameMatch =
                                               contentDisposition.match(
-                                                /filename="([^"]+)"/
+                                                /filename="([^"]+)"/,
                                               );
                                             if (filenameMatch) {
                                               filename = filenameMatch[1];
@@ -2704,12 +2734,12 @@ Possible solutions:
                                           document.body.removeChild(a);
 
                                           setSuccessMessage(
-                                            "Project exported successfully!"
+                                            "Project exported successfully!",
                                           );
                                         } catch (error) {
                                           setErrorMessage(
                                             "Failed to export project: " +
-                                              error.message
+                                              error.message,
                                           );
                                         }
                                       }}
@@ -2788,10 +2818,11 @@ Possible solutions:
                       {/* Label Selection */}
                       <div className="space-y-2">
                         <Label>Assign Label</Label>
+
                         <RadioGroup
                           value={selectedLabel}
                           onValueChange={setSelectedLabel}
-                          className="space-y-2"
+                          className="space-y-2 cursor-pointer"
                         >
                           {labels.map((label, index) => (
                             <div
@@ -2802,7 +2833,12 @@ Possible solutions:
                                 value={index.toString()}
                                 id={`label-${index}`}
                               />
-                              <Label htmlFor={`label-${index}`}>{label}</Label>
+                              <Label
+                                className="cursor-pointer"
+                                htmlFor={`label-${index}`}
+                              >
+                                {label}
+                              </Label>
                             </div>
                           ))}
                         </RadioGroup>
@@ -2834,15 +2870,15 @@ Possible solutions:
                             currentBatch[currentImageIndex]?.predictions || [];
                           const filteredPredictions = getFilteredPredictions(
                             rawPredictions,
-                            labels
+                            labels,
                           );
 
                           console.log(
-                            "=== CREATING NEW COMPONENT INSTANCE ==="
+                            "=== CREATING NEW COMPONENT INSTANCE ===",
                           );
                           console.log(
                             "Predictions to render:",
-                            filteredPredictions
+                            filteredPredictions,
                           );
 
                           // Render inline to avoid any component caching issues
@@ -2860,10 +2896,10 @@ Possible solutions:
                               <div className="space-y-2">
                                 {filteredPredictions.map((pred, idx) => {
                                   const confidence = Math.round(
-                                    pred.confidence * 100
+                                    pred.confidence * 100,
                                   );
                                   console.log(
-                                    `RENDERING: ${pred.label} with ${confidence}% (raw: ${pred.confidence})`
+                                    `RENDERING: ${pred.label} with ${confidence}% (raw: ${pred.confidence})`,
                                   );
 
                                   return (
@@ -2877,7 +2913,7 @@ Possible solutions:
                                           style={{
                                             width: `${Math.max(
                                               confidence,
-                                              1
+                                              1,
                                             )}%`,
                                           }}
                                         ></div>

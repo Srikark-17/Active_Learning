@@ -25,14 +25,14 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
   const [showLabelDialog, setShowLabelDialog] = useState(false);
   const [csvFile, setCsvFile] = useState(null);
   const [imageFiles, setImageFiles] = useState([]);
+  const [detectedLabels, setDetectedLabels] = useState([]);
 
   const handleFileChange = (e) => {
     const files = Array.from(e.target.files).filter((file) =>
-      file.type.startsWith("image/")
+      file.type.startsWith("image/"),
     );
-
     if (files.length > 0) {
-      onImagesLoaded(files); // JUST PASS FILES, NOT CSV LOGIC
+      onImagesLoaded(files);
     } else {
       onError("No valid image files selected");
     }
@@ -40,11 +40,10 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
 
   const handleFolderChange = (e) => {
     const files = Array.from(e.target.files).filter((file) =>
-      file.type.startsWith("image/")
+      file.type.startsWith("image/"),
     );
-
     if (files.length > 0) {
-      onImagesLoaded(files); // JUST PASS FILES, NOT CSV LOGIC
+      onImagesLoaded(files);
     } else {
       onError("No valid image files in selected folder");
     }
@@ -53,71 +52,49 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
   const handleCsvAndImagesChange = async (e) => {
     setIsLoading(true);
     const files = Array.from(e.target.files);
-
     if (files.length === 0) {
       setIsLoading(false);
       return;
     }
 
-    // Separate CSV and image files
     const csvFiles = files.filter(
-      (file) =>
-        file.name.endsWith(".csv") ||
-        file.name.endsWith(".tsv") ||
-        file.name.endsWith(".txt")
+      (f) =>
+        f.name.endsWith(".csv") ||
+        f.name.endsWith(".tsv") ||
+        f.name.endsWith(".txt"),
     );
-
-    const imgFiles = files.filter((file) => file.type.startsWith("image/"));
+    const imgFiles = files.filter((f) => f.type.startsWith("image/"));
 
     if (csvFiles.length === 0) {
       onError("Please include a CSV file with your selection");
       setIsLoading(false);
       return;
     }
-
     if (imgFiles.length === 0) {
       onError("Please include image files with your selection");
       setIsLoading(false);
       return;
     }
 
-    try {
-      console.log(
-        `Processing ${csvFiles.length} CSV files and ${imgFiles.length} image files`
-      );
-
-      // For direct upload, we just pass all the files together
-      const allFiles = [...csvFiles, ...imgFiles];
-
-      // We'll use a special flag to indicate this is a combined upload
-      onImagesLoaded(allFiles, "combined");
-
-      setIsLoading(false);
-    } catch (error) {
-      onError(`Error processing files: ${error.message}`);
-      setIsLoading(false);
-    }
+    onImagesLoaded([...csvFiles, ...imgFiles], "combined");
+    setIsLoading(false);
   };
 
-  // In ImageLoader.jsx, modify handleCsvWithLabelsSelect
   const handleCsvWithLabelsSelect = async (e) => {
     setIsLoading(true);
     const files = Array.from(e.target.files);
-
     if (files.length === 0) {
       setIsLoading(false);
       return;
     }
 
-    // Separate CSV and image files
     const csvFiles = files.filter(
-      (file) =>
-        file.name.endsWith(".csv") ||
-        file.name.endsWith(".tsv") ||
-        file.name.endsWith(".txt")
+      (f) =>
+        f.name.endsWith(".csv") ||
+        f.name.endsWith(".tsv") ||
+        f.name.endsWith(".txt"),
     );
-
-    const imgFiles = files.filter((file) => file.type.startsWith("image/"));
+    const imgFiles = files.filter((f) => f.type.startsWith("image/"));
 
     if (csvFiles.length === 0) {
       onError("Please include a CSV file with your selection");
@@ -125,130 +102,94 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
       return;
     }
 
-    try {
-      // Parse the CSV to detect column names
-      const csvFile = csvFiles[0];
-      setCsvFile(csvFile);
+    const selectedCsvFile = csvFiles[0];
+    setCsvFile(selectedCsvFile);
+    setImageFiles(imgFiles.length > 0 ? imgFiles : []);
 
-      if (imgFiles.length > 0) {
-        setImageFiles(imgFiles);
-      } else {
-        // If no images selected, make this a CSV-only operation
-        setImageFiles([]);
-      }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const content = ev.target.result;
 
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const content = e.target.result;
-          // Parse just the first few rows to get column names and preview
-          Papa.parse(content, {
-            header: true,
-            preview: 5,
-            complete: (result) => {
-              if (result.errors.length > 0) {
-                onError(
-                  `Error parsing CSV preview: ${result.errors[0].message}`
-                );
-                setIsLoading(false);
-                return;
-              }
+        const labelColumnNames = [
+          "annotation",
+          "label",
+          "class",
+          "category",
+          "target",
+          "classification",
+        ];
 
-              // Auto-detect label column
-              const columns = result.meta.fields;
-
-              // Look for common label column names, with 'annotation' added to the list
-              const labelColumns = [
-                "label",
-                "class",
-                "category",
-                "target",
-                "classification",
-                "annotation",
-              ];
-              let detectedLabelColumn = null;
-
-              for (const col of labelColumns) {
-                if (columns.includes(col)) {
-                  detectedLabelColumn = col;
-                  break;
-                }
-                // Try case-insensitive match
-                const colMatch = columns.find((c) => c.toLowerCase() === col);
-                if (colMatch) {
-                  detectedLabelColumn = colMatch;
-                  break;
-                }
-              }
-
-              if (detectedLabelColumn) {
-                setLabelColumn(detectedLabelColumn);
-              } else if (columns.length > 1) {
-                // If we couldn't find a standard label column, default to the second column
-                setLabelColumn(columns[1]);
-              }
-
-              // Extract unique label values for auto-populating labels
-              const uniqueLabels = new Set();
-              for (const row of result.data) {
-                if (detectedLabelColumn && row[detectedLabelColumn]) {
-                  uniqueLabels.add(row[detectedLabelColumn].trim());
-                }
-              }
-
-              // Store the unique labels
-              setDetectedLabels(
-                Array.from(uniqueLabels).filter((label) => label)
-              );
-
-              // Store preview for display
-              setCsvPreview(result.data);
-
-              // Open dialog to confirm label column
-              setShowLabelDialog(true);
+        Papa.parse(content, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (result) => {
+            if (result.errors.length > 0) {
+              onError(`Error parsing CSV: ${result.errors[0].message}`);
               setIsLoading(false);
-            },
-          });
-        } catch (error) {
-          onError(`Error reading CSV: ${error.message}`);
-          setIsLoading(false);
-        }
-      };
+              return;
+            }
 
-      reader.onerror = () => {
-        onError("Failed to read the CSV file");
+            const columns = result.meta.fields || [];
+
+            let detectedLabelColumn = null;
+            for (const col of labelColumnNames) {
+              if (columns.includes(col)) {
+                detectedLabelColumn = col;
+                break;
+              }
+              const match = columns.find((c) => c.toLowerCase() === col);
+              if (match) {
+                detectedLabelColumn = match;
+                break;
+              }
+            }
+            if (!detectedLabelColumn && columns.length > 1) {
+              detectedLabelColumn = columns[1];
+            }
+
+            if (detectedLabelColumn) setLabelColumn(detectedLabelColumn);
+
+            const uniqueLabels = new Set();
+            for (const row of result.data) {
+              const val =
+                detectedLabelColumn && row[detectedLabelColumn]
+                  ? row[detectedLabelColumn].trim()
+                  : null;
+              if (val) uniqueLabels.add(val);
+            }
+
+            const allLabels = Array.from(uniqueLabels).filter(Boolean).sort();
+            setDetectedLabels(allLabels);
+            setCsvPreview(result.data.slice(0, 5));
+            setShowLabelDialog(true);
+            setIsLoading(false);
+          },
+        });
+      } catch (error) {
+        onError(`Error reading CSV: ${error.message}`);
         setIsLoading(false);
-      };
+      }
+    };
 
-      reader.readAsText(csvFile);
-    } catch (error) {
-      onError(`Error processing files: ${error.message}`);
+    reader.onerror = () => {
+      onError("Failed to read the CSV file");
       setIsLoading(false);
-    }
+    };
+    reader.readAsText(selectedCsvFile);
   };
 
-  // Add state for detected labels
-  const [detectedLabels, setDetectedLabels] = useState([]);
-
-  // In handleConfirmLabelColumn, add detected labels to the response
   const handleConfirmLabelColumn = () => {
-    // Check if we have image files or CSV only
-    const csvOnly = imageFiles.length === 0;
-
-    if (csvOnly) {
-      // For CSV-only mode, we'll use a special flag
+    if (imageFiles.length === 0) {
       onImagesLoaded([csvFile], "csv-with-labels", labelColumn, detectedLabels);
     } else {
-      // For combined mode with images included
-      const allFiles = [csvFile, ...imageFiles];
       onImagesLoaded(
-        allFiles,
+        [csvFile, ...imageFiles],
         "combined-with-labels",
         labelColumn,
-        detectedLabels
+        detectedLabels,
       );
     }
-
     setShowLabelDialog(false);
   };
 
@@ -260,7 +201,6 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
             onClick={() => fileInputRef.current.click()}
             className="w-full"
             variant="outline"
-            title="hi"
             data-tooltip-id="upload-img-tooltip"
             data-tooltip-content="Upload images for active learning classification"
           >
@@ -350,7 +290,6 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
         )}
       </div>
 
-      {/* Dialog for confirming label column */}
       <Dialog open={showLabelDialog} onOpenChange={setShowLabelDialog}>
         <DialogContent>
           <DialogHeader>
@@ -370,20 +309,24 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
               className="mt-1"
               placeholder="Enter label column name"
             />
+            {detectedLabels.length > 0 && (
+              <p className="mt-2 text-sm text-gray-500">
+                Detected classes ({detectedLabels.length}):{" "}
+                {detectedLabels.join(", ")}
+              </p>
+            )}
           </div>
 
-          {csvPreview && (
+          {csvPreview && csvPreview.length > 0 && (
             <div className="max-h-60 overflow-y-auto">
-              <h4 className="font-medium mb-2">CSV Preview</h4>
+              <h4 className="font-medium mb-2">CSV Preview (first 5 rows)</h4>
               <table className="min-w-full divide-y divide-gray-200 text-sm">
                 <thead className="bg-gray-50">
                   <tr>
                     {Object.keys(csvPreview[0]).map((column) => (
                       <th
                         key={column}
-                        className={`px-3 py-2 text-left font-medium text-gray-500 ${
-                          column === labelColumn ? "bg-blue-100" : ""
-                        }`}
+                        className={`px-3 py-2 text-left font-medium text-gray-500 ${column === labelColumn ? "bg-blue-100" : ""}`}
                       >
                         {column}
                       </th>
@@ -396,9 +339,7 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
                       {Object.keys(row).map((column, colIndex) => (
                         <td
                           key={`${rowIndex}-${colIndex}`}
-                          className={`px-3 py-2 ${
-                            column === labelColumn ? "bg-blue-50" : ""
-                          }`}
+                          className={`px-3 py-2 ${column === labelColumn ? "bg-blue-50" : ""}`}
                         >
                           {row[column]}
                         </td>

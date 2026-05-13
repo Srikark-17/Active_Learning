@@ -120,7 +120,6 @@ const ModelPredictions = ({ predictions, labels }) => {
   );
 };
 
-// Main active learning status component
 const ActiveLearningStatus = ({ status, onStartNewBatch }) => {
   return (
     <Card className="mt-4">
