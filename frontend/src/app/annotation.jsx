@@ -1634,9 +1634,9 @@ Possible solutions:
                                   <div className="flex items-center space-x-2">
                                     <Input
                                       type="range"
-                                      min="0.1"
+                                      min="0.0"
                                       max="0.8"
-                                      step="0.05"
+                                      step="0.01"
                                       value={initialLabeledRatio}
                                       onChange={(e) =>
                                         setInitialLabeledRatio(
@@ -2063,9 +2063,9 @@ Possible solutions:
                                         <div className="flex items-center space-x-2">
                                           <Input
                                             type="range"
-                                            min="0.1"
+                                            min="0.0"
                                             max="0.8"
-                                            step="0.05"
+                                            step="0.01"
                                             value={initialLabeledRatio}
                                             onChange={(e) =>
                                               setInitialLabeledRatio(
@@ -2540,7 +2540,7 @@ Possible solutions:
                                       const newEpochs = Number(e.target.value);
                                       setEpochs(newEpochs);
                                     }}
-                                    min={5}
+                                    min={1}
                                     disabled={isRetraining}
                                   />
                                 </div>
@@ -2571,11 +2571,11 @@ Possible solutions:
                                 <div className="space-y-2">
                                   <Label>Initial Labeled Ratio</Label>
                                   <div className="flex items-center space-x-2">
-                                    <Input
+                                    <input
                                       type="range"
-                                      min="0.1"
+                                      min="0.0"
                                       max="0.8"
-                                      step="0.05"
+                                      step="0.01"
                                       value={initialLabeledRatio}
                                       onChange={(e) =>
                                         setInitialLabeledRatio(

@@ -196,49 +196,6 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
   return (
     <>
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <Button
-            onClick={() => fileInputRef.current.click()}
-            className="w-full"
-            variant="outline"
-            data-tooltip-id="upload-img-tooltip"
-            data-tooltip-content="Upload images for active learning classification"
-          >
-            <Upload className="h-4 w-4 mr-2" />
-            Upload Images
-          </Button>
-          <Tooltip id="upload-img-tooltip" />
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileChange}
-            accept="image/*"
-            multiple
-            className="hidden"
-          />
-
-          <Button
-            onClick={() => folderInputRef.current.click()}
-            className="w-full"
-            variant="outline"
-            data-tooltip-id="upload-folder-tooltip"
-            data-tooltip-content="Upload a folder of images for classification"
-          >
-            <FolderUp className="h-4 w-4 mr-2" />
-            Upload Folder
-          </Button>
-          <Tooltip id="upload-folder-tooltip" />
-          <input
-            type="file"
-            ref={folderInputRef}
-            onChange={handleFolderChange}
-            webkitdirectory="true"
-            directory="true"
-            multiple
-            className="hidden"
-          />
-        </div>
-
         <div className="grid grid-cols-1 gap-4">
           <Button
             onClick={() => csvAndImagesRef.current.click()}
@@ -249,7 +206,7 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
             data-tooltip-content="Upload a CSV with image paths for classification"
           >
             <Archive className="h-4 w-4 mr-2" />
-            {isLoading ? "Processing..." : "Upload CSV + Images Together"}
+            {isLoading ? "Processing..." : "Upload CSV with Image Paths"}
           </Button>
           <Tooltip id="upload-csv-tooltip" />
           <input
@@ -270,7 +227,9 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
             data-tooltip-content="Upload a CSV with image paths and labels for classification"
           >
             <Table className="h-4 w-4 mr-2" />
-            {isLoading ? "Processing..." : "Upload CSV with Labels + Images"}
+            {isLoading
+              ? "Processing..."
+              : "Upload CSV with Labels + Image Paths"}
           </Button>
           <Tooltip id="upload-csv-labels-tooltip" />
           <input

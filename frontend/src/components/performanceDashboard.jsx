@@ -222,7 +222,6 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
               label="Latest F1 (weighted)"
               value={fmtPct(latestF1)}
               color="blue"
-              sub={hasRealF1 ? "real" : "no data yet"}
             />
             <MetricCard
               label="Episodes done"

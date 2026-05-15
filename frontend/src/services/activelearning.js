@@ -380,6 +380,16 @@ const activeLearnAPI = {
     }
   },
 
+  async getLabelHint(imageId) {
+    try {
+      const response = await fetch(`${API_URL}/label-hint/${imageId}`);
+      if (!response.ok) return { available: false };
+      return response.json();
+    } catch {
+      return { available: false };
+    }
+  },
+
   getLRSchedulerStatus: async () => {
     try {
       const response = await fetch(`${API_URL}/lr-scheduler-status`);

@@ -87,6 +87,11 @@ class LabelSubmission(BaseModel):
     image_id: int
     label: int
 
+class TrainEpisodeRequest(BaseModel):
+    epochs: int = 10
+    batch_size: int = 32
+    learning_rate: float = 0.001
+
 class SimpleViTClassifier(nn.Module):
     """Simple ViT-based classifier for RETFound and similar models"""
     def __init__(self, num_classes=2, feature_dim=768):
@@ -4361,11 +4366,14 @@ async def upload_csv_paths_with_labels(
     label_column: str = Form(default="annotation"),
     delimiter: str = Form(default=","),
     val_split: float = Form(default=0.2),
-    initial_labeled_ratio: float = Form(default=0.4),
+    initial_labeled_ratio: float = Form(default=1.0),
     expected_label_mapping: str = Form(default=None)
 ):
     """
-    Process a CSV file with both image paths and labels with consistent label mapping
+    Process a CSV file with both image paths and labels.
+    Images with a label in the CSV go to labeled_data.
+    Images without a label go to unlabeled_data.
+    A val_split fraction of labeled images is held out as the validation set.
     """
     try:
 
@@ -4587,21 +4595,6 @@ async def upload_csv_paths_with_labels(
                 status_code=400, 
                 detail=f"Could not process any images. Failed paths: {failed_paths[:5]}"
             )
-        
-        if len(labeled_images) > 0 and initial_labeled_ratio < 1.0:
-            random.shuffle(labeled_images)
-            keep_labeled = max(1, int(len(labeled_images) * initial_labeled_ratio))
-            move_to_unlabeled = labeled_images[keep_labeled:]
-            labeled_images = labeled_images[:keep_labeled]
-
-            for idx in move_to_unlabeled:
-                if idx in al_manager.labeled_data:
-                    img_tensor, _ = al_manager.labeled_data.pop(idx)
-                    al_manager.unlabeled_data[idx] = img_tensor
-                    unlabeled_images.append(idx)
-
-            print(f"initial_labeled_ratio={initial_labeled_ratio}: kept {len(labeled_images)} labeled, "
-                  f"moved {len(move_to_unlabeled)} to unlabeled pool (ground truth retained)")
         
         if len(labeled_images) > 0:
             val_size = int(len(labeled_images) * val_split)
@@ -5503,12 +5496,11 @@ async def continue_from_evaluation():
         raise HTTPException(status_code=500, detail=f"Failed to continue from evaluation: {str(e)}")
 
 @app.post("/train-episode")
-async def train_episode(
-    epochs: int = 10,
-    batch_size: int = 32,
-    learning_rate: float = 0.001
-):
+async def train_episode(request: TrainEpisodeRequest):
     try:
+        epochs = request.epochs
+        batch_size = request.batch_size
+        learning_rate = request.learning_rate
         if not al_manager.model:
             raise HTTPException(status_code=400, detail="Model not initialized.")
         if len(al_manager.labeled_data) == 0:
