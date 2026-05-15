@@ -1651,9 +1651,9 @@ Possible solutions:
                                 <div className="flex items-center space-x-2">
                                   <Input
                                     type="range"
-                                    min="0.1"
+                                    min="0.0"
                                     max="0.3"
-                                    step="0.05"
+                                    step="0.01"
                                     value={valSplit}
                                     onChange={(e) =>
                                       setValSplit(parseFloat(e.target.value))
@@ -1665,6 +1665,12 @@ Possible solutions:
                                     {(valSplit * 100).toFixed(0)}%
                                   </span>
                                 </div>
+                                {valSplit < 0.05 && (
+                                  <p className="text-xs text-amber-600 flex items-center gap-1">
+                                    ⚠ Validation set is very small (&lt;5%).
+                                    Accuracy metrics may be unreliable.
+                                  </p>
+                                )}
                               </div>
 
                               {/* Data Split Preview */}
@@ -2040,9 +2046,9 @@ Possible solutions:
                                         <div className="flex items-center space-x-2">
                                           <Input
                                             type="range"
-                                            min="0.1"
+                                            min="0.0"
                                             max="0.3"
-                                            step="0.05"
+                                            step="0.01"
                                             value={valSplit}
                                             onChange={(e) =>
                                               setValSplit(
@@ -2055,6 +2061,13 @@ Possible solutions:
                                             {(valSplit * 100).toFixed(0)}%
                                           </span>
                                         </div>
+                                        {valSplit < 0.05 && (
+                                          <p className="text-xs text-amber-600 flex items-center gap-1">
+                                            ⚠ Validation set is very small
+                                            (&lt;5%). Accuracy metrics may be
+                                            unreliable.
+                                          </p>
+                                        )}
                                       </div>
 
                                       <div className="space-y-2">
@@ -2552,9 +2565,9 @@ Possible solutions:
                                   <div className="flex items-center space-x-2">
                                     <Input
                                       type="range"
-                                      min="0.1"
+                                      min="0.0"
                                       max="0.3"
-                                      step="0.05"
+                                      step="0.01"
                                       value={valSplit}
                                       onChange={(e) =>
                                         setValSplit(parseFloat(e.target.value))
@@ -2565,6 +2578,12 @@ Possible solutions:
                                       {(valSplit * 100).toFixed(0)}%
                                     </span>
                                   </div>
+                                  {valSplit < 0.05 && (
+                                    <p className="text-xs text-amber-600 flex items-center gap-1">
+                                      ⚠ Validation set is very small (&lt;5%).
+                                      Accuracy metrics may be unreliable.
+                                    </p>
+                                  )}
                                 </div>
 
                                 <div className="space-y-2">
