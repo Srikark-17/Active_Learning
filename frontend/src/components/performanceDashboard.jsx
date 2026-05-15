@@ -30,6 +30,8 @@ const STRATEGY_LABELS = {
   random: "Random",
 };
 
+const VAL_WARN_THRESHOLD = 0.05;
+
 function fmtPct(v) {
   if (v == null) return "—";
   return `${Number(v).toFixed(1)}%`;
@@ -46,7 +48,6 @@ function MetricCard({ label, value, sub, color }) {
       : color === "blue"
         ? "text-blue-600"
         : "text-gray-800";
-
   return (
     <div className="bg-gray-50 rounded-lg p-4">
       <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">
@@ -63,7 +64,7 @@ function MetricCard({ label, value, sub, color }) {
 const CustomTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   return (
-    <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-3 text-sm min-w-[160px]">
+    <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-3 text-sm min-w-[180px]">
       <p className="font-medium text-gray-700 mb-2">{label}</p>
       {payload.map((p) => (
         <p
@@ -72,7 +73,9 @@ const CustomTooltip = ({ active, payload, label }) => {
           style={{ color: p.color }}
         >
           <span>{p.name}</span>
-          <span className="font-mono">{fmtPct(p.value)}</span>
+          <span className="font-mono">
+            {p.name === "Val. set size" ? p.value : fmtPct(p.value)}
+          </span>
         </p>
       ))}
     </div>
@@ -111,11 +114,18 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
     return () => clearInterval(interval);
   }, [load, episodes.length]);
 
+  const totalImages = episodes.length
+    ? (episodes[0].labeled_size ?? 0) +
+      (episodes[0].unlabeled_size ?? 0) +
+      (episodes[0].validation_size ?? 0)
+    : 0;
+
   const chartData = episodes.map((ep) => ({
     name: `Ep ${ep.episode}`,
     Accuracy:
       ep.best_val_acc != null ? parseFloat(ep.best_val_acc.toFixed(1)) : null,
     "F1 score": ep.f1_score != null ? parseFloat(ep.f1_score.toFixed(1)) : null,
+    "Val. set size": ep.validation_size != null ? ep.validation_size : null,
   }));
 
   const accs = episodes.map((e) => e.best_val_acc ?? 0);
@@ -124,6 +134,12 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
   const latestAcc = accs.length ? accs[accs.length - 1] : null;
   const latestF1 = f1s.length ? f1s[f1s.length - 1] : null;
   const hasRealF1 = episodes.some((e) => e.f1_score != null);
+
+  const latestValSize = episodes.length
+    ? (episodes[episodes.length - 1].validation_size ?? 0)
+    : 0;
+  const valRatio = totalImages > 0 ? latestValSize / totalImages : 0;
+  const valTooSmall = valRatio > 0 && valRatio < VAL_WARN_THRESHOLD;
 
   if (loading && episodes.length === 0) {
     return (
@@ -206,7 +222,17 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
         </CardHeader>
 
         <CardContent className="space-y-6">
-          {}
+          {valTooSmall && (
+            <Alert className="border-amber-300 bg-amber-50">
+              <AlertCircle className="h-4 w-4 text-amber-600" />
+              <AlertDescription className="text-amber-800">
+                The validation set is now only {latestValSize} images (
+                {(valRatio * 100).toFixed(1)}% of total). Accuracy and F1
+                estimates may be unreliable. You can stop here or continue.
+              </AlertDescription>
+            </Alert>
+          )}
+
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <MetricCard
               label="Best accuracy"
@@ -222,6 +248,7 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
               label="Latest F1 (weighted)"
               value={fmtPct(latestF1)}
               color="blue"
+              sub={hasRealF1 ? "real" : "no data yet"}
             />
             <MetricCard
               label="Episodes done"
@@ -230,15 +257,14 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
             />
           </div>
 
-          {}
           <div>
             <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">
               Performance curve
             </p>
-            <ResponsiveContainer width="100%" height={260}>
+            <ResponsiveContainer width="100%" height={280}>
               <LineChart
                 data={chartData}
-                margin={{ top: 4, right: 16, left: 0, bottom: 0 }}
+                margin={{ top: 4, right: 56, left: 0, bottom: 0 }}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis
@@ -248,12 +274,29 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
                   tickLine={false}
                 />
                 <YAxis
+                  yAxisId="pct"
                   domain={[0, 100]}
                   tickFormatter={(v) => `${v}%`}
                   tick={{ fontSize: 11, fill: "#9ca3af" }}
                   axisLine={false}
                   tickLine={false}
                   width={42}
+                />
+                <YAxis
+                  yAxisId="count"
+                  orientation="right"
+                  tick={{ fontSize: 11, fill: "#c4b5fd" }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={48}
+                  label={{
+                    value: "Val. images",
+                    angle: 90,
+                    position: "insideRight",
+                    offset: 14,
+                    fontSize: 10,
+                    fill: "#c4b5fd",
+                  }}
                 />
                 <Tooltip content={<CustomTooltip />} />
                 <Legend
@@ -262,6 +305,7 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
                   wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
                 />
                 <ReferenceLine
+                  yAxisId="pct"
                   y={80}
                   stroke="#d1d5db"
                   strokeDasharray="4 3"
@@ -273,6 +317,7 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
                   }}
                 />
                 <Line
+                  yAxisId="pct"
                   type="monotone"
                   dataKey="Accuracy"
                   stroke="#059669"
@@ -282,12 +327,24 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
                   connectNulls
                 />
                 <Line
+                  yAxisId="pct"
                   type="monotone"
                   dataKey="F1 score"
                   stroke="#2563eb"
                   strokeWidth={2}
                   dot={{ r: 3.5, fill: "#2563eb" }}
                   activeDot={{ r: 5 }}
+                  connectNulls
+                />
+                <Line
+                  yAxisId="count"
+                  type="monotone"
+                  dataKey="Val. set size"
+                  stroke="#a78bfa"
+                  strokeWidth={1.5}
+                  strokeDasharray="5 3"
+                  dot={{ r: 3, fill: "#a78bfa" }}
+                  activeDot={{ r: 4 }}
                   connectNulls
                 />
               </LineChart>
@@ -300,7 +357,6 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
             )}
           </div>
 
-          {}
           <div>
             <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">
               Episode breakdown
@@ -309,14 +365,15 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
               <div className="overflow-x-auto">
                 <table
                   className="w-full text-sm"
-                  style={{ tableLayout: "fixed", minWidth: 540 }}
+                  style={{ tableLayout: "fixed", minWidth: 600 }}
                 >
                   <colgroup>
-                    <col style={{ width: 64 }} />
+                    <col style={{ width: 60 }} />
+                    <col style={{ width: 90 }} />
                     <col style={{ width: 100 }} />
-                    <col style={{ width: 110 }} />
-                    <col style={{ width: 90 }} />
-                    <col style={{ width: 90 }} />
+                    <col style={{ width: 80 }} />
+                    <col style={{ width: 80 }} />
+                    <col style={{ width: 70 }} />
                     <col />
                   </colgroup>
                   <thead className="bg-gray-50 border-b border-gray-200">
@@ -327,6 +384,7 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
                         "F1 (weighted)",
                         "Labeled",
                         "Unlabeled",
+                        "Val.",
                         "Strategy",
                       ].map((h) => (
                         <th
@@ -343,6 +401,12 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
                       const isBest =
                         ep.best_val_acc != null &&
                         Math.abs(ep.best_val_acc - (bestAcc ?? 0)) < 0.005;
+                      const epValRatio =
+                        totalImages > 0
+                          ? (ep.validation_size ?? 0) / totalImages
+                          : 0;
+                      const epValSmall =
+                        epValRatio > 0 && epValRatio < VAL_WARN_THRESHOLD;
                       return (
                         <tr
                           key={ep.episode}
@@ -368,6 +432,18 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
                           <td className="px-3 py-2 font-mono text-xs text-gray-600">
                             {ep.unlabeled_size ?? "—"}
                           </td>
+                          <td className="px-3 py-2 font-mono text-xs">
+                            <span
+                              className={
+                                epValSmall
+                                  ? "text-amber-600 font-medium"
+                                  : "text-gray-600"
+                              }
+                            >
+                              {ep.validation_size ?? "—"}
+                              {epValSmall && " ⚠"}
+                            </span>
+                          </td>
                           <td className="px-3 py-2">
                             <span className="inline-block text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
                               {strategyLabel(ep.strategy)}
@@ -381,8 +457,8 @@ const PerformanceDashboard = ({ maxEpisodes = 10 }) => {
               </div>
             </div>
             <p className="text-xs text-gray-400 mt-2">
-              F1 is weighted-average across all classes, computed on the
-              validation set at the best-accuracy checkpoint of each episode.
+              F1 is weighted-average across all classes. Val. = validation set
+              image count — ⚠ flags when it drops below 5% of total images.
             </p>
           </div>
         </CardContent>

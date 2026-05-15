@@ -1429,6 +1429,7 @@ class ActiveLearningManager:
                     'strategy': self.training_config["sampling_strategy"],
                     'labeled_size': len(self.labeled_data),
                     'unlabeled_size': len(self.unlabeled_data),
+                    'validation_size': len(self.validation_data),
                     'best_val_acc': best_val_acc,
                     'f1_score': best_f1,
                     'learning_rate': new_lr,
@@ -3246,6 +3247,7 @@ def train_episode(self, epochs: int, batch_size: int, learning_rate: float):
                 'strategy': self.training_config["sampling_strategy"],
                 'labeled_size': len(self.labeled_data),
                 'unlabeled_size': len(self.unlabeled_data),
+                'validation_size': len(self.validation_data),
                 'best_val_acc': best_val_acc,
                 'f1_score': best_f1,
                 'learning_rate': new_lr,
@@ -3325,13 +3327,14 @@ async def get_episode_history():
     clean_episodes = []
     for ep in al_manager.episode_history:
         clean_episodes.append({
-            "episode":       ep.get("episode"),
-            "best_val_acc":  round(ep.get("best_val_acc", 0.0), 2),
-            "f1_score":      round(ep["f1_score"], 2) if ep.get("f1_score") is not None else None,
-            "labeled_size":  ep.get("labeled_size", 0),
-            "unlabeled_size": ep.get("unlabeled_size", 0),
-            "strategy":      ep.get("strategy", ""),
-            "batch_size":    ep.get("batch_size", 0),
+            "episode":         ep.get("episode"),
+            "best_val_acc":    round(ep.get("best_val_acc", 0.0), 2),
+            "f1_score":        round(ep["f1_score"], 2) if ep.get("f1_score") is not None else None,
+            "labeled_size":    ep.get("labeled_size", 0),
+            "unlabeled_size":  ep.get("unlabeled_size", 0),
+            "validation_size": ep.get("validation_size", 0),
+            "strategy":        ep.get("strategy", ""),
+            "batch_size":      ep.get("batch_size", 0),
         })
     return {
         "episodes": clean_episodes,

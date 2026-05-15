@@ -1556,7 +1556,10 @@ Possible solutions:
                                             strategy: value,
                                           }))
                                         }
-                                        disabled={isRetraining}
+                                        disabled={
+                                          isInitialized ||
+                                          batchStats.completed > 0
+                                        }
                                       >
                                         <SelectTrigger>
                                           <SelectValue placeholder="Select LR strategy" />
@@ -1953,7 +1956,10 @@ Possible solutions:
                                               strategy: value,
                                             }))
                                           }
-                                          disabled={isRetraining}
+                                          disabled={
+                                            isInitialized ||
+                                            batchStats.completed > 0
+                                          }
                                         >
                                           <SelectTrigger>
                                             <SelectValue placeholder="Select LR strategy" />
@@ -1993,7 +1999,10 @@ Possible solutions:
                                           min={0.0001}
                                           max={0.1}
                                           step={0.0001}
-                                          disabled={isRetraining}
+                                          disabled={
+                                            isInitialized ||
+                                            batchStats.completed > 0
+                                          }
                                         />
                                       </div>
 
@@ -2034,7 +2043,10 @@ Possible solutions:
                                             setEpochs(newEpochs);
                                           }}
                                           min={5}
-                                          disabled={isRetraining}
+                                          disabled={
+                                            isInitialized ||
+                                            batchStats.completed > 0
+                                          }
                                         />
                                       </div>
                                     </div>
@@ -2477,7 +2489,9 @@ Possible solutions:
                                         strategy: value,
                                       }))
                                     }
-                                    disabled={isRetraining}
+                                    disabled={
+                                      isInitialized || batchStats.completed > 0
+                                    }
                                   >
                                     <SelectTrigger>
                                       <SelectValue placeholder="Select LR strategy" />
@@ -2515,7 +2529,9 @@ Possible solutions:
                                     min={0.0001}
                                     max={0.1}
                                     step={0.0001}
-                                    disabled={isRetraining}
+                                    disabled={
+                                      isInitialized || batchStats.completed > 0
+                                    }
                                   />
                                 </div>
 
@@ -2553,7 +2569,9 @@ Possible solutions:
                                       setEpochs(newEpochs);
                                     }}
                                     min={5}
-                                    disabled={isRetraining}
+                                    disabled={
+                                      isInitialized || batchStats.completed > 0
+                                    }
                                   />
                                 </div>
                               </div>

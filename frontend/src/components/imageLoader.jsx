@@ -1,126 +1,41 @@
 import React, { useRef, useState } from "react";
 import { Button } from "./ui/button";
-import { Upload, FolderUp, Archive, Table } from "lucide-react";
+import { Table } from "lucide-react";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  Dialog, DialogContent, DialogDescription,
+  DialogFooter, DialogHeader, DialogTitle,
 } from "./ui/dialog";
 import Papa from "papaparse";
-import { Tooltip } from "react-tooltip";
 
 const ImageLoader = ({ onImagesLoaded, onError }) => {
-  const fileInputRef = useRef(null);
-  const folderInputRef = useRef(null);
-  const csvAndImagesRef = useRef(null);
-  const csvWithLabelsRef = useRef(null);
+  const csvRef = useRef(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [labelColumn, setLabelColumn] = useState("label");
+  const [labelColumn, setLabelColumn] = useState("annotation");
   const [csvPreview, setCsvPreview] = useState(null);
-  const [showLabelDialog, setShowLabelDialog] = useState(false);
+  const [showDialog, setShowDialog] = useState(false);
   const [csvFile, setCsvFile] = useState(null);
-  const [imageFiles, setImageFiles] = useState([]);
   const [detectedLabels, setDetectedLabels] = useState([]);
 
-  const handleFileChange = (e) => {
-    const files = Array.from(e.target.files).filter((file) =>
-      file.type.startsWith("image/"),
-    );
-    if (files.length > 0) {
-      onImagesLoaded(files);
-    } else {
-      onError("No valid image files selected");
-    }
-  };
+  const LABEL_COLUMN_NAMES = [
+    "annotation", "label", "class", "category", "target", "classification",
+  ];
 
-  const handleFolderChange = (e) => {
-    const files = Array.from(e.target.files).filter((file) =>
-      file.type.startsWith("image/"),
-    );
-    if (files.length > 0) {
-      onImagesLoaded(files);
-    } else {
-      onError("No valid image files in selected folder");
+  const handleCsvSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.endsWith(".csv")) {
+      onError("Please upload a CSV file.");
+      e.target.value = "";
+      return;
     }
-  };
-
-  const handleCsvAndImagesChange = async (e) => {
     setIsLoading(true);
-    const files = Array.from(e.target.files);
-    if (files.length === 0) {
-      setIsLoading(false);
-      return;
-    }
-
-    const csvFiles = files.filter(
-      (f) =>
-        f.name.endsWith(".csv") ||
-        f.name.endsWith(".tsv") ||
-        f.name.endsWith(".txt"),
-    );
-    const imgFiles = files.filter((f) => f.type.startsWith("image/"));
-
-    if (csvFiles.length === 0) {
-      onError("Please include a CSV file with your selection");
-      setIsLoading(false);
-      return;
-    }
-    if (imgFiles.length === 0) {
-      onError("Please include image files with your selection");
-      setIsLoading(false);
-      return;
-    }
-
-    onImagesLoaded([...csvFiles, ...imgFiles], "combined");
-    setIsLoading(false);
-  };
-
-  const handleCsvWithLabelsSelect = async (e) => {
-    setIsLoading(true);
-    const files = Array.from(e.target.files);
-    if (files.length === 0) {
-      setIsLoading(false);
-      return;
-    }
-
-    const csvFiles = files.filter(
-      (f) =>
-        f.name.endsWith(".csv") ||
-        f.name.endsWith(".tsv") ||
-        f.name.endsWith(".txt"),
-    );
-    const imgFiles = files.filter((f) => f.type.startsWith("image/"));
-
-    if (csvFiles.length === 0) {
-      onError("Please include a CSV file with your selection");
-      setIsLoading(false);
-      return;
-    }
-
-    const selectedCsvFile = csvFiles[0];
-    setCsvFile(selectedCsvFile);
-    setImageFiles(imgFiles.length > 0 ? imgFiles : []);
-
+    setCsvFile(file);
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const content = ev.target.result;
-
-        const labelColumnNames = [
-          "annotation",
-          "label",
-          "class",
-          "category",
-          "target",
-          "classification",
-        ];
-
-        Papa.parse(content, {
+        Papa.parse(ev.target.result, {
           header: true,
           skipEmptyLines: true,
           complete: (result) => {
@@ -129,179 +44,102 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
               setIsLoading(false);
               return;
             }
-
             const columns = result.meta.fields || [];
-
-            let detectedLabelColumn = null;
-            for (const col of labelColumnNames) {
-              if (columns.includes(col)) {
-                detectedLabelColumn = col;
-                break;
-              }
+            let detected = null;
+            for (const col of LABEL_COLUMN_NAMES) {
+              if (columns.includes(col)) { detected = col; break; }
               const match = columns.find((c) => c.toLowerCase() === col);
-              if (match) {
-                detectedLabelColumn = match;
-                break;
-              }
+              if (match) { detected = match; break; }
             }
-            if (!detectedLabelColumn && columns.length > 1) {
-              detectedLabelColumn = columns[1];
-            }
-
-            if (detectedLabelColumn) setLabelColumn(detectedLabelColumn);
-
-            const uniqueLabels = new Set();
+            if (!detected && columns.length > 1) detected = columns[1];
+            if (detected) setLabelColumn(detected);
+            const unique = new Set();
             for (const row of result.data) {
-              const val =
-                detectedLabelColumn && row[detectedLabelColumn]
-                  ? row[detectedLabelColumn].trim()
-                  : null;
-              if (val) uniqueLabels.add(val);
+              const val = detected && row[detected] ? row[detected].trim() : null;
+              if (val) unique.add(val);
             }
-
-            const allLabels = Array.from(uniqueLabels).filter(Boolean).sort();
+            const allLabels = Array.from(unique).filter(Boolean).sort();
             setDetectedLabels(allLabels);
             setCsvPreview(result.data.slice(0, 5));
-            setShowLabelDialog(true);
+            setShowDialog(true);
             setIsLoading(false);
           },
         });
-      } catch (error) {
-        onError(`Error reading CSV: ${error.message}`);
+      } catch (err) {
+        onError(`Error reading CSV: ${err.message}`);
         setIsLoading(false);
       }
     };
-
-    reader.onerror = () => {
-      onError("Failed to read the CSV file");
-      setIsLoading(false);
-    };
-    reader.readAsText(selectedCsvFile);
+    reader.onerror = () => { onError("Failed to read the CSV file."); setIsLoading(false); };
+    reader.readAsText(file);
+    e.target.value = "";
   };
 
-  const handleConfirmLabelColumn = () => {
-    if (imageFiles.length === 0) {
-      onImagesLoaded([csvFile], "csv-with-labels", labelColumn, detectedLabels);
-    } else {
-      onImagesLoaded(
-        [csvFile, ...imageFiles],
-        "combined-with-labels",
-        labelColumn,
-        detectedLabels,
-      );
-    }
-    setShowLabelDialog(false);
+  const handleConfirm = () => {
+    onImagesLoaded([csvFile], "csv-with-labels", labelColumn, detectedLabels);
+    setShowDialog(false);
   };
 
   return (
     <>
-      <div className="space-y-4">
-        <div className="grid grid-cols-1 gap-4">
-          <Button
-            onClick={() => csvAndImagesRef.current.click()}
-            className="w-full"
-            variant="outline"
-            disabled={isLoading}
-            data-tooltip-id="upload-csv-tooltip"
-            data-tooltip-content="Upload a CSV with image paths for classification"
-          >
-            <Archive className="h-4 w-4 mr-2" />
-            {isLoading ? "Processing..." : "Upload CSV with Image Paths"}
-          </Button>
-          <Tooltip id="upload-csv-tooltip" />
-          <input
-            type="file"
-            ref={csvAndImagesRef}
-            onChange={handleCsvAndImagesChange}
-            accept=".csv,.tsv,.txt,image/*"
-            multiple
-            className="hidden"
-          />
-
-          <Button
-            onClick={() => csvWithLabelsRef.current.click()}
-            className="w-full"
-            variant="default"
-            disabled={isLoading}
-            data-tooltip-id="upload-csv-labels-tooltip"
-            data-tooltip-content="Upload a CSV with image paths and labels for classification"
-          >
-            <Table className="h-4 w-4 mr-2" />
-            {isLoading
-              ? "Processing..."
-              : "Upload CSV with Labels + Image Paths"}
-          </Button>
-          <Tooltip id="upload-csv-labels-tooltip" />
-          <input
-            type="file"
-            ref={csvWithLabelsRef}
-            onChange={handleCsvWithLabelsSelect}
-            accept=".csv,.tsv,.txt,image/*"
-            multiple
-            className="hidden"
-          />
-        </div>
-
-        {isLoading && (
-          <div className="text-center text-sm text-gray-500">
-            Processing files...
-          </div>
-        )}
+      <div>
+        <Button
+          onClick={() => csvRef.current.click()}
+          className="w-full"
+          variant="default"
+          disabled={isLoading}
+        >
+          <Table className="h-4 w-4 mr-2" />
+          {isLoading ? "Processing..." : "Upload CSV with Labels"}
+        </Button>
+        <input type="file" ref={csvRef} onChange={handleCsvSelect} accept=".csv" className="hidden" />
+        <p className="text-xs text-gray-400 mt-1">
+          CSV must have a <code>file_path</code> column with absolute paths and an <code>annotation</code> column with class labels.
+        </p>
       </div>
 
-      <Dialog open={showLabelDialog} onOpenChange={setShowLabelDialog}>
+      <Dialog open={showDialog} onOpenChange={setShowDialog}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Confirm Label Column</DialogTitle>
             <DialogDescription>
-              We detected the following columns in your CSV. Please confirm
-              which column contains the class labels:
+              Confirm which column contains the class labels. All labeled rows will be used for Episode 0 training.
             </DialogDescription>
           </DialogHeader>
-
-          <div className="py-4">
-            <Label htmlFor="label-column">Label Column</Label>
-            <Input
-              id="label-column"
-              value={labelColumn}
-              onChange={(e) => setLabelColumn(e.target.value)}
-              className="mt-1"
-              placeholder="Enter label column name"
-            />
+          <div className="py-4 space-y-3">
+            <div>
+              <Label htmlFor="label-column">Label Column</Label>
+              <Input
+                id="label-column"
+                value={labelColumn}
+                onChange={(e) => setLabelColumn(e.target.value)}
+                className="mt-1"
+                placeholder="e.g. annotation"
+              />
+            </div>
             {detectedLabels.length > 0 && (
-              <p className="mt-2 text-sm text-gray-500">
+              <p className="text-sm text-gray-600">
                 Detected classes ({detectedLabels.length}):{" "}
-                {detectedLabels.join(", ")}
+                <span className="font-medium">{detectedLabels.join(", ")}</span>
               </p>
             )}
           </div>
-
           {csvPreview && csvPreview.length > 0 && (
-            <div className="max-h-60 overflow-y-auto">
-              <h4 className="font-medium mb-2">CSV Preview (first 5 rows)</h4>
+            <div className="max-h-52 overflow-y-auto">
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Preview (first 5 rows)</p>
               <table className="min-w-full divide-y divide-gray-200 text-sm">
                 <thead className="bg-gray-50">
                   <tr>
-                    {Object.keys(csvPreview[0]).map((column) => (
-                      <th
-                        key={column}
-                        className={`px-3 py-2 text-left font-medium text-gray-500 ${column === labelColumn ? "bg-blue-100" : ""}`}
-                      >
-                        {column}
-                      </th>
+                    {Object.keys(csvPreview[0]).map((col) => (
+                      <th key={col} className={`px-3 py-2 text-left font-medium text-gray-500 ${col === labelColumn ? "bg-blue-100" : ""}`}>{col}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 bg-white">
-                  {csvPreview.map((row, rowIndex) => (
-                    <tr key={rowIndex}>
-                      {Object.keys(row).map((column, colIndex) => (
-                        <td
-                          key={`${rowIndex}-${colIndex}`}
-                          className={`px-3 py-2 ${column === labelColumn ? "bg-blue-50" : ""}`}
-                        >
-                          {row[column]}
-                        </td>
+                  {csvPreview.map((row, ri) => (
+                    <tr key={ri}>
+                      {Object.keys(row).map((col, ci) => (
+                        <td key={`${ri}-${ci}`} className={`px-3 py-2 truncate max-w-[180px] ${col === labelColumn ? "bg-blue-50" : ""}`} title={row[col]}>{row[col]}</td>
                       ))}
                     </tr>
                   ))}
@@ -309,12 +147,9 @@ const ImageLoader = ({ onImagesLoaded, onError }) => {
               </table>
             </div>
           )}
-
           <DialogFooter>
-            <Button onClick={() => setShowLabelDialog(false)} variant="outline">
-              Cancel
-            </Button>
-            <Button onClick={handleConfirmLabelColumn}>Confirm & Upload</Button>
+            <Button onClick={() => setShowDialog(false)} variant="outline">Cancel</Button>
+            <Button onClick={handleConfirm}>Confirm & Upload</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
