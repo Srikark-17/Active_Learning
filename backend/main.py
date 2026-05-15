@@ -5549,13 +5549,16 @@ async def training_status():
 @app.get("/label-hint/{image_id}")
 async def get_label_hint(image_id: int):
     hint = al_manager.ground_truth_labels.get(image_id)
+    full_path = al_manager.image_paths.get(image_id, "")
+    file_name = os.path.basename(full_path) if full_path else f"image_{image_id}"
     if hint:
         return {
             "available": True,
             "label_idx":  hint["label_idx"],
             "label_name": hint["label_name"],
+            "file_name":  file_name,
         }
-    return {"available": False, "label_idx": None, "label_name": None}
+    return {"available": False, "label_idx": None, "label_name": None, "file_name": file_name}
 
 @app.get("/")
 async def main():
