@@ -64,6 +64,7 @@ const ActiveLearningUI = () => {
   const [projectType, setProjectType] = useState("new");
   const [isBatchInProgress, setIsBatchInProgress] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [isContinuing, setIsContinuing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [episodeHistory, setEpisodeHistory] = useState([]);
   const [valSplit, setValSplit] = useState(0.2);
@@ -966,7 +967,8 @@ Possible solutions:
 
   const handleContinueFromEvaluation = async () => {
     try {
-      setInfoMessage("Preparing next batch for active learning...");
+      setIsContinuing(true);
+      setInfoMessage("Continuing — preparing next batch...");
 
       const result = await activeLearnAPI.continueFromEvaluation();
 
@@ -996,9 +998,11 @@ Possible solutions:
 
       setShowEvaluationScreen(false);
       setEvaluationData(null);
+      setIsContinuing(false);
     } catch (error) {
       console.error("Error continuing from evaluation:", error);
       setErrorMessage("Error preparing next batch: " + error.message);
+      setIsContinuing(false);
     }
   };
 
@@ -1243,16 +1247,45 @@ Possible solutions:
   }, [currentBatch]);
 
   useEffect(() => {
-    if (!currentBatch.length) return;
+    if (!currentBatch.length) {
+      console.log("[Label Hint] No batch loaded yet");
+      return;
+    }
     const imageId = currentBatch[currentImageIndex]?.image_id;
-    if (imageId == null) return;
-    activeLearnAPI.getLabelHint(imageId).then((hint) => {
-      if (hint?.available) {
-        console.log(
-          `[Label Hint] Image ${imageId} → ${hint.label_name} (index ${hint.label_idx})`,
+    console.log(
+      `[Label Hint] image_id=${imageId}, index=${currentImageIndex}, batch length=${currentBatch.length}`,
+    );
+    if (imageId == null) {
+      console.log("[Label Hint] image_id is null/undefined");
+      return;
+    }
+    if (typeof activeLearnAPI.getLabelHint !== "function") {
+      console.error(
+        "[Label Hint] getLabelHint is not defined on activeLearnAPI — check activelearning.js",
+      );
+      return;
+    }
+    activeLearnAPI
+      .getLabelHint(imageId)
+      .then((hint) => {
+        console.log(`[Label Hint] Raw response for ${imageId}:`, hint);
+        if (hint?.available) {
+          const imageName = hint.file_name || `image_${imageId}`;
+          console.log(
+            `[Label Hint] ${imageName} → ${hint.label_name} (index ${hint.label_idx})`,
+          );
+        } else {
+          console.log(
+            `[Label Hint] available=false for image_id ${imageId} — not in ground_truth_labels on backend`,
+          );
+        }
+      })
+      .catch((err) => {
+        console.error(
+          `[Label Hint] Fetch failed for image_id ${imageId}:`,
+          err,
         );
-      }
-    });
+      });
   }, [currentBatch, currentImageIndex]);
 
   const hasLoadedFiles = () => {
@@ -1330,6 +1363,7 @@ Possible solutions:
         <ModelEvaluationScreen
           evaluationData={evaluationData}
           onContinueTraining={handleContinueFromEvaluation}
+          isContinuing={isContinuing}
           onExportModel={handleExportFromEvaluation}
           labels={labels}
           currentEpisode={status.current_episode || 0}
@@ -1487,7 +1521,10 @@ Possible solutions:
                                       <Select
                                         value={samplingStrategy}
                                         onValueChange={setSamplingStrategy}
-                                        disabled={batchStats.completed > 0}
+                                        disabled={
+                                          isInitialized ||
+                                          batchStats.completed > 0
+                                        }
                                       >
                                         <SelectTrigger>
                                           <SelectValue placeholder="Select strategy" />
@@ -1559,7 +1596,7 @@ Possible solutions:
                                         min={0.0001}
                                         max={0.1}
                                         step={0.0001}
-                                        disabled={isRetraining}
+                                        disabled={isInitialized || isRetraining}
                                       />
                                     </div>
 
@@ -1582,6 +1619,7 @@ Possible solutions:
                                         min={1}
                                         max={100}
                                         disabled={
+                                          isInitialized ||
                                           isRetraining ||
                                           batchStats.completed > 0
                                         }
@@ -1599,8 +1637,8 @@ Possible solutions:
                                           );
                                           setEpochs(newEpochs);
                                         }}
-                                        min={10}
-                                        disabled={isRetraining}
+                                        min={1}
+                                        disabled={isInitialized || isRetraining}
                                       />
                                     </div>
                                   </div>
@@ -1608,47 +1646,24 @@ Possible solutions:
                               </Card>
 
                               {/* Data Split Configuration */}
-                              <div className="grid grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                  <Label>Validation Split</Label>
-                                  <div className="flex items-center space-x-2">
-                                    <Input
-                                      type="range"
-                                      min="0.1"
-                                      max="0.3"
-                                      step="0.05"
-                                      value={valSplit}
-                                      onChange={(e) =>
-                                        setValSplit(parseFloat(e.target.value))
-                                      }
-                                      className="flex-1"
-                                    />
-                                    <span className="text-sm w-16 text-right">
-                                      {(valSplit * 100).toFixed(0)}%
-                                    </span>
-                                  </div>
-                                </div>
-
-                                <div className="space-y-2">
-                                  <Label>Initial Labeled Ratio</Label>
-                                  <div className="flex items-center space-x-2">
-                                    <Input
-                                      type="range"
-                                      min="0.0"
-                                      max="0.8"
-                                      step="0.01"
-                                      value={initialLabeledRatio}
-                                      onChange={(e) =>
-                                        setInitialLabeledRatio(
-                                          parseFloat(e.target.value),
-                                        )
-                                      }
-                                      className="flex-1"
-                                    />
-                                    <span className="text-sm w-16 text-right">
-                                      {(initialLabeledRatio * 100).toFixed(0)}%
-                                    </span>
-                                  </div>
+                              <div className="space-y-2">
+                                <Label>Validation Split</Label>
+                                <div className="flex items-center space-x-2">
+                                  <Input
+                                    type="range"
+                                    min="0.1"
+                                    max="0.3"
+                                    step="0.05"
+                                    value={valSplit}
+                                    onChange={(e) =>
+                                      setValSplit(parseFloat(e.target.value))
+                                    }
+                                    disabled={isInitialized}
+                                    className="flex-1"
+                                  />
+                                  <span className="text-sm w-16 text-right">
+                                    {(valSplit * 100).toFixed(0)}%
+                                  </span>
                                 </div>
                               </div>
 
@@ -1674,27 +1689,11 @@ Possible solutions:
                                         </span>
                                       </div>
                                       <div className="flex justify-between">
-                                        <span>Initial Labeled Set:</span>
-                                        <span>
-                                          {Math.round(
-                                            loadedImages.length *
-                                              (1 - valSplit) *
-                                              initialLabeledRatio,
-                                          )}{" "}
-                                          images
-                                        </span>
-                                      </div>
-                                      <div className="flex justify-between">
-                                        <span>Remaining Unlabeled:</span>
+                                        <span>Unlabeled Pool:</span>
                                         <span>
                                           {loadedImages.length -
                                             Math.round(
                                               loadedImages.length * valSplit,
-                                            ) -
-                                            Math.round(
-                                              loadedImages.length *
-                                                (1 - valSplit) *
-                                                initialLabeledRatio,
                                             )}{" "}
                                           images
                                         </span>
@@ -2063,9 +2062,9 @@ Possible solutions:
                                         <div className="flex items-center space-x-2">
                                           <Input
                                             type="range"
-                                            min="0.0"
+                                            min="0.1"
                                             max="0.8"
-                                            step="0.01"
+                                            step="0.05"
                                             value={initialLabeledRatio}
                                             onChange={(e) =>
                                               setInitialLabeledRatio(
@@ -2540,7 +2539,7 @@ Possible solutions:
                                       const newEpochs = Number(e.target.value);
                                       setEpochs(newEpochs);
                                     }}
-                                    min={1}
+                                    min={5}
                                     disabled={isRetraining}
                                   />
                                 </div>
@@ -2571,11 +2570,11 @@ Possible solutions:
                                 <div className="space-y-2">
                                   <Label>Initial Labeled Ratio</Label>
                                   <div className="flex items-center space-x-2">
-                                    <input
+                                    <Input
                                       type="range"
-                                      min="0.0"
+                                      min="0.1"
                                       max="0.8"
-                                      step="0.01"
+                                      step="0.05"
                                       value={initialLabeledRatio}
                                       onChange={(e) =>
                                         setInitialLabeledRatio(
@@ -2822,7 +2821,7 @@ Possible solutions:
                         <RadioGroup
                           value={selectedLabel}
                           onValueChange={setSelectedLabel}
-                          className="space-y-2 cursor-pointer"
+                          className="space-y-2"
                         >
                           {labels.map((label, index) => (
                             <div
@@ -2833,12 +2832,7 @@ Possible solutions:
                                 value={index.toString()}
                                 id={`label-${index}`}
                               />
-                              <Label
-                                className="cursor-pointer"
-                                htmlFor={`label-${index}`}
-                              >
-                                {label}
-                              </Label>
+                              <Label htmlFor={`label-${index}`}>{label}</Label>
                             </div>
                           ))}
                         </RadioGroup>
